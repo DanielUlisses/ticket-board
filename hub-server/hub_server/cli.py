@@ -1,4 +1,4 @@
-"""`hub-server` command line: `serve`, `token add|revoke <devbox>`."""
+"""`hub-server` command line: `serve [--no-schedule]`, `token add|revoke <devbox>`."""
 
 import argparse
 import os
@@ -51,6 +51,14 @@ def main(argv: list[str] | None = None) -> int:
         help="default: $TK_HUB_WEB_DIST or hub-web/dist",
     )
 
+    serve.add_argument(
+        "--no-schedule",
+        dest="schedule",
+        action="store_false",
+        help="run without the scheduler: no automatic launches, no ▶ Run waves "
+        "(▶ Frontier and every manual action still work)",
+    )
+
     token = sub.add_parser("token", help="manage per-devbox daemon tokens")
     token_sub = token.add_subparsers(dest="action", required=True)
     for action, text in (
@@ -79,7 +87,11 @@ def main(argv: list[str] | None = None) -> int:
         env_hosts = os.environ.get("TK_HUB_HOSTNAMES", "")
         hosts = args.host_name or [x.strip() for x in env_hosts.split(",") if x.strip()]
         app = create_app(
-            db_path=db, allowed_logins=logins, web_dist=web_dist, host_names=hosts
+            db_path=db,
+            allowed_logins=logins,
+            web_dist=web_dist,
+            host_names=hosts,
+            schedule=args.schedule,
         )
         uvicorn.run(app, host=args.host, port=args.port)
         return 0

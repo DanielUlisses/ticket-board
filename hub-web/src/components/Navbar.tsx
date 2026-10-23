@@ -1,9 +1,10 @@
 import type { Page } from "../store/store";
 import styles from "./Navbar.module.css";
+import { SchedulerPanel, WavesButton, type SchedulerApi } from "./Scheduler";
 import { useStore, useView } from "./StoreContext";
 
-/** Brand, the Cards | Live Board switch, ↻ Scan and the ☾ Night placeholder. */
-export function Navbar({ onScan }: { onScan: (devbox: string | null) => void }) {
+/** Brand, the Cards | Live Board switch, ↻ Scan, the Scheduler panel and ▶ Run waves. */
+export function Navbar({ onScan, scheduler }: { onScan: (devbox: string | null) => void; scheduler: SchedulerApi }) {
   const store = useStore();
   const { page, filter } = useView();
   const pageButton = (p: Page, label: string, dot = false) => (
@@ -37,14 +38,8 @@ export function Navbar({ onScan }: { onScan: (devbox: string | null) => void }) 
         >
           ↻ Scan
         </button>
-        <button
-          type="button"
-          className={`${styles.btnPill} ${styles.primary}`}
-          disabled
-          title="Night shift arrives with the scheduler"
-        >
-          ☾ Night
-        </button>
+        <SchedulerPanel api={scheduler} />
+        <WavesButton api={scheduler} />
       </span>
     </nav>
   );

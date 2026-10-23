@@ -90,11 +90,6 @@
 .btnPill:hover:not(:disabled) {
   border-color: var(--text-primary);
 }
-.primary {
-  background: var(--text-primary);
-  color: #fff;
-  border-color: var(--text-primary);
-}
 .btnPill:disabled {
   cursor: not-allowed;
 }

@@ -5,13 +5,14 @@ import contextlib
 import json
 import logging
 from collections.abc import Iterable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hub_server import PROTOCOL_VERSION
@@ -23,6 +24,7 @@ from hub_server.hub import (
     Hub,
     frontier_launches,
 )
+from hub_server.scheduler import TICK, Scheduler
 
 REFUSED_CLOSE_CODE = 1008  # policy violation
 # hub-server/hub_server/app.py -> <repo>/hub-web/dist
@@ -208,6 +210,19 @@ class MemoryProposal(BaseModel):
     text: str
 
 
+TIMESTAMP = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
+
+
+class SettingsRequest(BaseModel):
+    """The hub settings to change: the total cap, ▶ Run waves on/off and its
+    start (null: now)."""
+
+    model_config = ConfigDict(extra="forbid")
+    total_cap: StrictInt | None = Field(default=None, ge=1, le=100)
+    waves: StrictBool | None = None
+    waves_start: str | None = Field(default=None, pattern=TIMESTAMP)
+
+
 def create_app(
     db_path: Path | str,
     *,
@@ -218,14 +233,29 @@ def create_app(
     hello_timeout: float = HELLO_TIMEOUT,
     token_check_interval: float = TOKEN_CHECK_INTERVAL,
     ui_send_timeout: float = UI_SEND_TIMEOUT,
+    schedule: bool = True,
+    schedule_tick: float = TICK,
 ) -> FastAPI:
     """allowed_logins: Tailscale-User-Login allowlist; empty or None admits the
     whole tailnet. web_dist: the built hub-web, served at / when it exists.
     rpc_timeouts: per-method rpc timeout overrides, in seconds. host_names:
     the hub's own names (and IPs) accepted as Host, besides local ones.
-    Timeouts and the token re-check interval are in seconds."""
+    Timeouts and the token re-check interval are in seconds. schedule: run
+    the scheduler (on every state change and every schedule_tick seconds);
+    off, the settings routes still work."""
     hub = Hub(db_path, rpc_timeouts=rpc_timeouts, ui_send_timeout=ui_send_timeout)
-    app = FastAPI(title="tk-hub")
+    scheduler = Scheduler(hub, enabled=schedule)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        ticker = (
+            asyncio.create_task(scheduler.ticking(schedule_tick)) if schedule else None
+        )
+        yield
+        if ticker:
+            ticker.cancel()
+
+    app = FastAPI(title="tk-hub", lifespan=lifespan)
     app.add_middleware(SameOriginGuard)
     if allowed_logins:
         app.add_middleware(TailscaleAllowlist, allowed=set(allowed_logins))
@@ -242,6 +272,7 @@ def create_app(
         )
     app.add_middleware(HostAllowlist, allowed=allowed_hosts)
     app.state.hub = hub
+    app.state.scheduler = scheduler
 
     async def refuse(ws: WebSocket, reason: str):
         with contextlib.suppress(*SEND_ERRORS):
@@ -527,6 +558,29 @@ def create_app(
         except DevboxOffline:
             raise HTTPException(409, f"devbox {devbox} is offline") from None
         return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
+
+    @app.get("/api/settings")
+    async def get_settings():
+        return asdict(scheduler.settings())
+
+    @app.post("/api/settings")
+    async def set_settings(request: SettingsRequest):
+        """Change hub settings; hub_settings goes to every UI, and the
+        scheduler runs a pass on them."""
+        values = request.model_dump(exclude_unset=True)
+        values = {
+            k: v for k, v in values.items() if v is not None or k == "waves_start"
+        }
+        if not values:
+            raise HTTPException(422, "no settings to change")
+        if "waves_start" in values and values.get("waves") is not True:
+            raise HTTPException(422, "waves_start comes only with waves: true")
+        return await scheduler.update_settings(**values)
+
+    @app.get("/api/scheduler")
+    async def scheduler_log():
+        """The scheduler's latest decisions, newest first."""
+        return {"entries": hub.store.decisions()}
 
     # Last, so /api and /ws routes win over the catch-all mount.
     if web_dist is not None and Path(web_dist).is_dir():

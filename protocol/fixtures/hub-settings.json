@@ -1,0 +1,8 @@
+{
+  "type": "hub_settings",
+  "settings": {
+    "total_cap": 8,
+    "waves": true,
+    "waves_start": "2026-10-23T22:00:00Z"
+  }
+}

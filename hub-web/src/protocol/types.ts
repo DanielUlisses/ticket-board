@@ -191,8 +191,48 @@ export interface SynthesisEvent {
   error?: string;
 }
 
+/**
+ * `$defs/hub_settings_values` (`GET`/`POST /api/settings`): the total cap and ▶ Run waves
+ * (board.md's ☾ Night, reworked): on from `waves_start` (null: now) until the hub turns it
+ * off once nothing is left to launch, ship or merge, or (nothing still moving) the usage gate holds every launch.
+ */
+export interface HubSettings {
+  total_cap: number;
+  waves: boolean;
+  waves_start: Timestamp | null;
+}
+
+/** `$defs/scheduler_entry`: one scheduler decision and why. */
+export interface SchedulerEntry {
+  id: number;
+  at: Timestamp;
+  action: "sent" | "skipped" | "failed" | "waves_off";
+  method: string | null;
+  devbox: string | null;
+  board_key: string | null;
+  nn: string | null;
+  reason: string;
+}
+
+export interface HubSettingsEvent {
+  type: "hub_settings";
+  settings: HubSettings;
+}
+export interface SchedulerLogEvent {
+  type: "scheduler_log";
+  entry: SchedulerEntry;
+}
+
 /** Every message the hub sends on /ws/ui. */
-export type UiEvent = BoardSynced | BoardRemoved | TicketMoved | DevboxStatus | RpcResult | SynthesisEvent;
+export type UiEvent =
+  | BoardSynced
+  | BoardRemoved
+  | TicketMoved
+  | DevboxStatus
+  | RpcResult
+  | SynthesisEvent
+  | HubSettingsEvent
+  | SchedulerLogEvent;
 
 /**
  * `GET /api/boards`. ASSUMPTION: ticket 08 describes it as "all boards/tickets +

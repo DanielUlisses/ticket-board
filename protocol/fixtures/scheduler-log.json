@@ -1,0 +1,13 @@
+{
+  "type": "scheduler_log",
+  "entry": {
+    "id": 42,
+    "at": "2026-10-23T22:00:30Z",
+    "action": "skipped",
+    "method": "launch_ticket",
+    "devbox": "dev-daniel",
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "reason": "dev-daniel's 5-hour usage is 92% (gate 90%) until 2026-10-24T01:00:00Z"
+  }
+}

@@ -4,7 +4,18 @@
 // Components read it through `view()` (a cached snapshot, stable between
 // changes, so it plugs into useSyncExternalStore) and never keep their own copy.
 import { COLUMN_META, GROUPS, type Group } from "../columns";
-import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, SynthesisEvent, UiEvent } from "../protocol/types";
+import type {
+  Board,
+  BoardsResponse,
+  Devbox,
+  HubSettings,
+  Ticket,
+  RpcResult,
+  SchedulerEntry,
+  SentRpc,
+  SynthesisEvent,
+  UiEvent,
+} from "../protocol/types";
 
 /** The stage presets (pills) and the keys of `Counts`: "all" is every group. */
 export type Stage = "all" | Group;
@@ -78,6 +89,10 @@ export interface View {
   panes: Readonly<Record<string, Pane>>;
   /** The last merge_pr / verify_landed result per ticket, by `ticketId` (gate lines, landed + PR). */
   ship: Readonly<Record<string, RpcResult>>;
+  /** The hub settings (total cap, ▶ Run waves); null until loaded. */
+  settings: HubSettings | null;
+  /** The scheduler's latest decisions, newest first. */
+  schedulerLog: SchedulerEntry[];
 }
 
 interface State {
@@ -92,6 +107,8 @@ interface State {
   settled: Record<string, boolean>;
   panes: Record<string, Pane>;
   ship: Record<string, RpcResult>;
+  settings: HubSettings | null;
+  schedulerLog: SchedulerEntry[];
 }
 
 /** Every group except Done: running, frontier and blocked tickets show, finished ones don't. */
@@ -115,6 +132,9 @@ export const JUST_MOVED_MS = 3000;
  * the result was lost (a /ws/ui gap) and the spinner stops, with a warning.
  */
 export const PENDING_EXPIRY_MS = 135_000;
+
+/** How many scheduler decisions the panel keeps (the hub sends its latest 100). */
+const SCHEDULER_KEPT = 100;
 
 /** How many finished actions `settled` remembers. */
 const SETTLED_KEPT = 200;
@@ -175,6 +195,8 @@ export function createStore() {
     settled: {},
     panes: {},
     ship: {},
+    settings: null,
+    schedulerLog: [],
   };
   let cached: View | null = null;
   let nextToast = 1;
@@ -291,6 +313,13 @@ export function createStore() {
         toast(rpcToast(event));
         return;
       }
+      case "hub_settings":
+        set({ settings: event.settings });
+        return;
+      case "scheduler_log":
+        if (state.schedulerLog.some((e) => e.id === event.entry.id)) return;
+        set({ schedulerLog: [event.entry, ...state.schedulerLog].slice(0, SCHEDULER_KEPT) });
+        return;
       case "synthesis_started":
       case "synthesis_finished":
       case "synthesis_failed": {
@@ -367,6 +396,8 @@ export function createStore() {
       settled: state.settled,
       panes: state.panes,
       ship: state.ship,
+      settings: state.settings,
+      schedulerLog: state.schedulerLog,
     };
   }
 
@@ -375,6 +406,10 @@ export function createStore() {
       set({ ship: shipAfter(data.boards), boards: data.boards, devboxes: data.devboxes });
     },
     apply,
+    /** `GET /api/scheduler`: the latest decisions, newest first. */
+    loadSchedulerLog(entries: SchedulerEntry[]) {
+      set({ schedulerLog: entries.slice(0, SCHEDULER_KEPT) });
+    },
     setFilter(patch: Partial<Filter>) {
       set({ filter: { ...state.filter, ...patch } });
     },

@@ -1,5 +1,6 @@
 // Typed client for the hub: `GET /api/boards` on start, `/ws/ui` kept open
-// with backoff reconnects, `POST /api/scan` for ↻ Scan, and the ticket actions
+// with backoff reconnects, `POST /api/scan` for ↻ Scan, the hub settings and
+// scheduler log (`/api/settings`, `/api/scheduler`), and the ticket actions
 // (`POST /api/boards/{key}/tickets/{nn}/action`, `.../frontier`): each accepted
 // rpc is tracked in the store until its rpc_result arrives on the socket.
 // Everything it learns goes into the one store; it holds no board data itself.
@@ -14,8 +15,10 @@ import type {
   ActivityEvent,
   ActivityResponse,
   BoardsResponse,
+  HubSettings,
   PolicyEdit,
   ReportResponse,
+  SchedulerEntry,
   SentRpc,
   TicketType,
   UiEvent,
@@ -67,13 +70,26 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     store.load((await res.json()) as BoardsResponse);
   }
 
+  /** The hub settings and the scheduler's log; a hub without them leaves the controls disabled. */
+  async function loadScheduler() {
+    const [settings, log] = await Promise.all([
+      getJson<HubSettings>(`${origin}/api/settings`),
+      getJson<{ entries?: SchedulerEntry[] }>(`${origin}/api/scheduler`),
+    ]);
+    if (typeof settings?.total_cap === "number") store.apply({ type: "hub_settings", settings });
+    if (Array.isArray(log?.entries)) store.loadSchedulerLog(log.entries);
+  }
+
   function connect() {
     const ws = new Socket(wsUrl);
     socket = ws;
     let opened = false;
     ws.onopen = () => {
       // Events sent while we were away are lost: resync from REST.
-      if (attempt > 0) loadBoards().catch(() => {});
+      if (attempt > 0) {
+        loadBoards().catch(() => {});
+        loadScheduler().catch(() => {});
+      }
       opened = true;
       attempt = 0;
     };
@@ -220,7 +236,10 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
       } catch (err) {
         store.toast({ kind: "error", text: `Could not load boards: ${(err as Error).message}` });
       }
-      if (mine === generation) connect();
+      if (mine === generation) {
+        connect();
+        loadScheduler().catch(() => {});
+      }
     },
     stop() {
       stopped = true;
@@ -230,6 +249,16 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         socket.onopen = socket.onmessage = socket.onclose = null;
         socket.close();
         socket = null;
+      }
+    },
+    /** Changes hub settings (total cap, ▶ Run waves); the hub answers with all of them, and tells every UI. */
+    async setSettings(patch: Partial<HubSettings>): Promise<boolean> {
+      try {
+        store.apply({ type: "hub_settings", settings: await post<HubSettings>(`${origin}/api/settings`, patch) });
+        return true;
+      } catch (err) {
+        store.toast({ kind: "error", text: `Scheduler setting not saved: ${(err as Error).message}` });
+        return false;
       }
     },
     /** Writes the board's policy override (tk.sh policy-set); the new resolved policy arrives with its next snapshot. */

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tk-hub/protocol/schema.json",
   "title": "tk-hub protocol",
-  "description": "Every message exchanged between devbox-daemon, hub-server and hub-web. One document is one message; `type` selects its shape. Daemon -> hub: hello, snapshot, rpc_result, synthesis_started, synthesis_finished, synthesis_failed (relayed by the hub to /ws/ui as they are). Hub -> daemon: welcome, refused, rpc. Hub -> UI (/ws/ui): board_synced, board_removed, ticket_moved, synthesis_started, synthesis_finished, synthesis_failed, rpc_result, devbox_status. A major `protocol_version` mismatch is refused.",
+  "description": "Every message exchanged between devbox-daemon, hub-server and hub-web. One document is one message; `type` selects its shape. Daemon -> hub: hello, snapshot, rpc_result, synthesis_started, synthesis_finished, synthesis_failed (relayed by the hub to /ws/ui as they are). Hub -> daemon: welcome, refused, rpc. Hub -> UI (/ws/ui): board_synced, board_removed, ticket_moved, synthesis_started, synthesis_finished, synthesis_failed, rpc_result, devbox_status, hub_settings, scheduler_log. A major `protocol_version` mismatch is refused.",
   "x-protocol-version": "1.0",
   "type": "object",
   "required": ["type"],
@@ -22,7 +22,9 @@
     { "if": { "required": ["type"], "properties": { "type": { "const": "synthesis_started" } } }, "then": { "$ref": "#/$defs/synthesis_event" } },
     { "if": { "required": ["type"], "properties": { "type": { "const": "synthesis_finished" } } }, "then": { "$ref": "#/$defs/synthesis_event" } },
     { "if": { "required": ["type"], "properties": { "type": { "const": "synthesis_failed" } } }, "then": { "$ref": "#/$defs/synthesis_failed" } },
-    { "if": { "required": ["type"], "properties": { "type": { "const": "devbox_status" } } }, "then": { "$ref": "#/$defs/devbox_status" } }
+    { "if": { "required": ["type"], "properties": { "type": { "const": "devbox_status" } } }, "then": { "$ref": "#/$defs/devbox_status" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "hub_settings" } } }, "then": { "$ref": "#/$defs/hub_settings" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "scheduler_log" } } }, "then": { "$ref": "#/$defs/scheduler_log" } }
   ],
   "$defs": {
     "message_type": {
@@ -30,7 +32,7 @@
         "hello", "welcome", "refused", "snapshot", "rpc", "rpc_result",
         "board_synced", "board_removed", "ticket_moved",
         "synthesis_started", "synthesis_finished", "synthesis_failed",
-        "devbox_status"
+        "devbox_status", "hub_settings", "scheduler_log"
       ]
     },
 
@@ -727,6 +729,54 @@
       }
     },
 
+    "hub_settings_values": {
+      "description": "Hub-only settings (SQLite). total_cap: running tickets across every box (board.md, Scheduler). waves: ▶ Run waves (board.md's ☾ Night, reworked: no time of day, no auto-off time) arms night_shift boards as auto and opens PRs / pushes / merges where policy allows, from waves_start (null: from when it was turned on) until nothing is left to launch, ship or merge (no frontier, and every started ticket has shipped as far as its board's policy allows or waits for a human), or, with nothing still moving, every remaining launch is held by the usage gate; then the hub turns it off and logs why.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_cap", "waves", "waves_start"],
+      "properties": {
+        "total_cap": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "waves": { "type": "boolean" },
+        "waves_start": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] }
+      }
+    },
+    "hub_settings": {
+      "description": "Hub -> UI: the hub settings changed (from a UI, or the scheduler turning ▶ Run waves off).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "settings"],
+      "properties": {
+        "type": { "const": "hub_settings" },
+        "settings": { "$ref": "#/$defs/hub_settings_values" }
+      }
+    },
+    "scheduler_entry": {
+      "description": "One scheduler decision. sent: an automatic rpc went out (reason: frontier or waves); skipped: a candidate waits, and why (logged when the reason changes); failed: an automatic rpc failed or was refused (retried after a cooldown); waves_off: ▶ Run waves turned itself off, and why.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "at", "action", "method", "devbox", "board_key", "nn", "reason"],
+      "properties": {
+        "id": { "type": "integer" },
+        "at": { "$ref": "#/$defs/timestamp" },
+        "action": { "enum": ["sent", "skipped", "failed", "waves_off"] },
+        "method": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/rpc_method" }] },
+        "devbox": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/name" }] },
+        "board_key": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/board_key" }] },
+        "nn": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nn" }] },
+        "reason": { "type": "string" }
+      }
+    },
+    "scheduler_log": {
+      "description": "Hub -> UI: a new scheduler decision.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "entry"],
+      "properties": {
+        "type": { "const": "scheduler_log" },
+        "entry": { "$ref": "#/$defs/scheduler_entry" }
+      }
+    },
+
     "rest_boards": {
       "description": "REST: GET /api/boards. Every board the hub holds (stale ones included) and every devbox it has heard from.",
       "type": "object",
@@ -858,6 +908,19 @@
     "rest_set_task_done": {
       "description": "REST: POST /api/boards/{key}/tickets/{nn}/tasks, body {text, done} (the checklist item, matched by normalised text) -> 202, one set_task_done rpc to the board's devbox; the tick arrives with the board's next snapshot. 404 unknown board or ticket, 409 devbox offline, 422 bad body.",
       "$ref": "#/$defs/rest_set_policy"
+    },
+    "rest_settings": {
+      "description": "REST: GET /api/settings, and POST /api/settings (body: any of total_cap, waves, waves_start; waves_start only with waves: true, else 422; turning waves off clears waves_start) -> 200 with the settings after the change. 422 bad or empty body.",
+      "$ref": "#/$defs/hub_settings_values"
+    },
+    "rest_scheduler": {
+      "description": "REST: GET /api/scheduler. The scheduler's latest decisions (at most 100), newest first.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries"],
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/scheduler_entry" } }
+      }
     },
     "rest_error": {
       "description": "REST: any 4xx/5xx. detail is a message, or FastAPI's list of validation errors (422).",
