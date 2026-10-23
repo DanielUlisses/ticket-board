@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createHubClient, type SocketLike } from "./api/client";
 import { App } from "./App";
@@ -36,12 +36,13 @@ async function renderApp() {
     WebSocket: FakeSocket,
   });
   render(<App store={store} client={client} />);
-  await screen.findAllByRole("article");
+  await waitFor(() => expect(articles().length).toBeGreaterThan(0));
   return { store, fetch };
 }
 
+const articles = () => screen.queryAllByRole("button").filter((e) => e.tagName === "ARTICLE");
 const pill = (name: RegExp) => screen.getByRole("button", { name });
-const cardNumbers = () => screen.queryAllByRole("article").map((a) => a.getAttribute("aria-label")!.split(" ")[0]);
+const cardNumbers = () => articles().map((a) => a.getAttribute("aria-label")!.split(" ")[0]);
 
 describe("App", () => {
   it("shows the navbar: brand, page switch, Scan and a Night placeholder", async () => {
@@ -57,7 +58,7 @@ describe("App", () => {
     await renderApp();
     fireEvent.click(screen.getByRole("button", { name: "Live Board" }));
     expect(screen.getByRole("table")).toBeInTheDocument();
-    expect(screen.queryAllByRole("article")).toHaveLength(0);
+    expect(articles()).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Cards" }));
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });

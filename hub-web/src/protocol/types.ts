@@ -36,6 +36,13 @@ export interface Pr {
   checks: PrCheck[];
 }
 
+/** `$defs/manual_task`. */
+export interface ManualTask {
+  text: string;
+  done: boolean;
+  source: "synthesis" | "developer";
+}
+
 /** `$defs/ticket` (subset). */
 export interface Ticket {
   nn: string;
@@ -54,6 +61,9 @@ export interface Ticket {
   note: string;
   hint: string;
   summary: string | null;
+  reviewer_notes: string | null;
+  full_report_md: string | null;
+  manual_tasks: ManualTask[];
   synthesis_backend: SynthesisBackend | null;
   synthesis_status: SynthesisStatus;
 }
@@ -66,6 +76,7 @@ export interface Board {
   slug: string;
   repo: string;
   forge: "github" | "azure" | "none";
+  project_memory: string | null;
   hub_meta: { archived: boolean };
   hash: string;
   exported_at: Timestamp;
@@ -139,4 +150,23 @@ export type UiEvent = BoardSynced | BoardRemoved | TicketMoved | DevboxStatus | 
 export interface BoardsResponse {
   boards: Board[];
   devboxes: Devbox[];
+}
+
+/**
+ * `GET /api/boards/{board_key}/tickets/{nn}/report`. ASSUMPTION: ticket 08
+ * names the endpoint but not the shape; `body` is the raw ticket file.
+ */
+export interface ReportResponse {
+  full_report_md: string | null;
+  body: string;
+}
+
+/**
+ * One row of `GET /api/boards/{board_key}/tickets/{nn}/activity` (the hub's
+ * `ticket_moved` log, oldest first). ASSUMPTION: a bare array, shape as TicketMoved.
+ */
+export interface ActivityEvent {
+  from: Column;
+  to: Column;
+  at: Timestamp;
 }

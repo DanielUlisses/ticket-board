@@ -19,7 +19,7 @@ export function CardGrid() {
           <BoardBar board={board} box={devboxes.find((d) => d.devbox === board.devbox)} />
           <div className={styles.grid}>
             {board.tickets.map((t) => (
-              <Card key={t.nn} ticket={t} />
+              <Card key={t.nn} ticket={t} boardKey={board.key} />
             ))}
           </div>
         </section>

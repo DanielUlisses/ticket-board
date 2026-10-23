@@ -157,3 +157,16 @@ describe("hub client", () => {
     expect(store.view().toasts[0]).toMatchObject({ kind: "error", text: "↻ Scan failed: Failed to fetch" });
   });
 });
+
+describe("ticket detail endpoints", () => {
+  it("GETs report and activity with each board_key segment encoded", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify([]), { status: 200 }));
+    const client = createHubClient(createStore(), { origin: "https://hub", fetch: fetch as unknown as typeof globalThis.fetch });
+    await client.activity("dev one/repo/board", "01");
+    await client.report("dev-daniel/repo/board", "01");
+    expect(fetch.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual([
+      "https://hub/api/boards/dev%20one/repo/board/tickets/01/activity",
+      "https://hub/api/boards/dev-daniel/repo/board/tickets/01/report",
+    ]);
+  });
+});
