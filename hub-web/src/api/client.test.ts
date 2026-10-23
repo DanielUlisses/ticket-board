@@ -240,6 +240,17 @@ describe("setArchived", () => {
   });
 });
 
+describe("syncBox", () => {
+  it("POSTs {force} to the devbox's sync route and toasts ok", async () => {
+    const { store, fetch, client } = setup();
+    await client.syncBox("dev box", true);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("https://tk-hub.example.ts.net/api/devboxes/dev%20box/sync");
+    expect(JSON.parse(init?.body as string)).toEqual({ force: true });
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "ok" });
+  });
+});
+
 describe("refine and setTaskDone", () => {
   it("refine POSTs {comment} to the ticket's comment route", async () => {
     const { fetch, client } = setup();
@@ -309,6 +320,22 @@ describe("ticket actions", () => {
     ]);
   });
 
+  it("refreshBrief posts to the board's brief route and tracks the rpc", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ rpcs: [sent("")] }, 202));
+    expect(await client.refreshBrief(KEY)).toBe(true);
+    expect(fetch.mock.calls[0][0]).toBe(`https://tk-hub.example.ts.net/api/boards/${KEY}/brief`);
+    expect(fetch.mock.calls[0][1]?.method).toBe("POST");
+    expect(store.view().pending).toHaveLength(1);
+  });
+
+  it("a refused brief refresh toasts and returns false", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ detail: "devbox dev-daniel is offline" }, 409));
+    expect(await client.refreshBrief(KEY)).toBe(false);
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("offline") });
+  });
+
   it("a result that beats its POST's answer leaves nothing pending", async () => {
     const { store, fetch, client } = setup();
     fetch.mockImplementationOnce(() => {
@@ -339,6 +366,18 @@ describe("ticket actions", () => {
       const client = answering("rest_activity", { board_key: moved.board_key, nn: moved.nn, events: [moved] });
       const events = await client.activity(moved.board_key, moved.nn);
       expect(events).toEqual([moved]);
+    });
+
+    it("diff gives rest_diff as is, asking for one file with ?file=", async () => {
+      const list = {
+        board_key: KEY, nn: "25", base: "abc", diff_hash: "sha256:ff",
+        files: [{ path: "a b.ts", status: "M", added: 1, removed: 0, binary: false }],
+      };
+      const client = answering("rest_diff", list);
+      expect(await client.diff(KEY, "25")).toEqual(list);
+      const one = { ...list, ...list.files[0], files: undefined, diff: "@@ -1 +1 @@\n+x\n", stub: null };
+      const single = answering("rest_diff", JSON.parse(JSON.stringify(one)));
+      await single.diff(KEY, "25", "a b.ts");
     });
 
     it("report gives rest_report as is, a missing body as null", async () => {

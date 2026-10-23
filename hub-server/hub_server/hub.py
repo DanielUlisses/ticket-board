@@ -84,6 +84,8 @@ class PendingRpc:
     nn: str | None
     ws: WebSocket  # the connection it was sent on; only that one can lose it
     timer: asyncio.TimerHandle | None = field(default=None)
+    # A caller waiting for the result (a GET): it gets it, the UI socket does not.
+    waiter: asyncio.Future | None = field(default=None)
 
 
 class Hub:
@@ -216,6 +218,7 @@ class Hub:
         self.store.update_devbox(devbox, online=False, last_seen=now())
         self.store.boards.mark_stale(devbox)
         keys = self.store.boards.keys(devbox)
+        # "devbox disconnected" is matched by app.py diff_failure_status (a 409)
         failed = self._take_pending(ws, "devbox disconnected")
         await self._finish_all(failed)
         for key in keys:
@@ -258,15 +261,17 @@ class Hub:
         params: dict,
         board_key: str | None = None,
         nn: str | None = None,
+        waiter: asyncio.Future | None = None,
     ) -> str:
         """Send an rpc to the devbox's daemon; returns its id. The rpc_result
-        (the daemon's, or a timeout/disconnect failure) is broadcast to the UI."""
+        (the daemon's, or a timeout/disconnect failure) is broadcast to the UI,
+        or, given a `waiter` future, handed to it instead."""
         ws = self.daemons.get(devbox)
         if ws is None:
             raise DevboxOffline(devbox)
         rpc_id = f"r-{uuid.uuid4().hex}"
         loop = asyncio.get_running_loop()
-        rpc = PendingRpc(devbox, method, board_key, nn, ws)
+        rpc = PendingRpc(devbox, method, board_key, nn, ws, waiter=waiter)
         self.pending[rpc_id] = rpc
         seconds = self.timeout(method)
         timed_out = _failed(rpc_id, f"timed out after {seconds:g}s")
@@ -278,6 +283,7 @@ class Hub:
                 {"type": "rpc", "id": rpc_id, "method": method, "params": params}
             )
         except SEND_ERRORS:
+            # matched by app.py diff_failure_status (a 409)
             await self._finish(rpc_id, _failed(rpc_id, "devbox disconnected"))
         return rpc_id
 
@@ -344,6 +350,10 @@ class Hub:
     async def _complete(self, rpc: PendingRpc, result: dict):
         if rpc.timer is not None:
             rpc.timer.cancel()
+        if rpc.waiter is not None:
+            if not rpc.waiter.done():
+                rpc.waiter.set_result(result)
+            return
         result = result | {"devbox": rpc.devbox, "method": rpc.method}
         if rpc.board_key is not None:
             result["board_key"] = rpc.board_key

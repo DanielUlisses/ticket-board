@@ -98,7 +98,8 @@
       "properties": {
         "started_at": { "$ref": "#/$defs/timestamp" },
         "finished_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
-        "exit_code": { "type": ["integer", "null"] },
+        "exit_code": { "type": ["integer", "null"], "description": "null while it runs or when it was interrupted." },
+        "interrupted": { "type": "boolean", "description": "No exit code and its systemd unit is gone: killed or rebooted mid-sync." },
         "log_path": { "type": "string" },
         "log_tail": { "type": "string" }
       }
@@ -166,7 +167,8 @@
         "next": { "type": "array", "items": { "type": "string" } },
         "synthesis_backend": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/synthesis_backend" }] },
         "synthesis_status": { "$ref": "#/$defs/synthesis_status" },
-        "updated_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] }
+        "updated_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
+        "synthesis_error": { "description": "Why the last run failed (synthesis_status failed; the lines above are the previous good brief), else null.", "type": ["string", "null"] }
       }
     },
     "hub_meta": {
@@ -634,7 +636,7 @@
     },
 
     "rpc_result": {
-      "description": "Daemon -> hub reply to an rpc, and hub -> UI forward of it (the hub adds devbox, method, board_key, nn). `data` carries structured results (get_diff, verify_landed, sweep_board, pane_tail…); `reason` a human explanation of a refusal.",
+      "description": "Daemon -> hub reply to an rpc, and hub -> UI forward of it (the hub adds devbox, method, board_key, nn); a result the hub holds a waiter for (get_diff) goes only to that REST caller, not to /ws/ui. `data` carries structured results (get_diff, verify_landed, sweep_board, pane_tail…); `reason` a human explanation of a refusal.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "id", "ok", "exit_code", "output_tail"],
@@ -800,6 +802,43 @@
         "body": { "type": ["string", "null"] }
       }
     },
+    "rest_diff": {
+      "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/diff[?file=]. The daemon's get_diff data, as is: `files` (path, status M/A/D/R, old_path on R, added, removed, binary) without ?file=, at most the daemon's diff_max_files of them (`truncated` true then, `total_files` the real count; diff_hash still covers all); with it that file's entry plus `diff` (unified; empty when stubbed) and `stub` (null, \"binary\", \"over_cap\" or \"nested_repo\"). diff_hash identifies the whole diff, untracked files included (an untracked nested repo, listed as `nested_repo: true` with a trailing slash in its path, by its HEAD only). An untracked file over the daemon's read limit (or past its per-request byte budget) is identified by its stat (inode, size, mtime, ctime, mode), so a mere touch on it changes diff_hash. Errors (rest_error): 404 unknown board, ticket or file, 409 devbox offline (or gone mid-request) or ticket without worktree/base, 504 timed out, 502 any other refusal or failure.",
+      "type": "object",
+      "required": ["board_key", "nn", "base", "diff_hash"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "base": { "type": "string" },
+        "diff_hash": { "type": "string", "minLength": 1 },
+        "truncated": { "type": "boolean" },
+        "total_files": { "type": "integer", "minimum": 0 },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "status", "added", "removed", "binary"],
+            "properties": {
+              "path": { "type": "string" },
+              "old_path": { "type": "string" },
+              "status": { "enum": ["M", "A", "D", "R"] },
+              "added": { "type": "integer", "minimum": 0 },
+              "removed": { "type": "integer", "minimum": 0 },
+              "binary": { "type": "boolean" },
+              "nested_repo": { "type": "boolean" }
+            }
+          }
+        },
+        "path": { "type": "string" },
+        "status": { "enum": ["M", "A", "D", "R"] },
+        "added": { "type": "integer", "minimum": 0 },
+        "removed": { "type": "integer", "minimum": 0 },
+        "binary": { "type": "boolean" },
+        "nested_repo": { "type": "boolean" },
+        "diff": { "type": "string" },
+        "stub": { "enum": [null, "binary", "over_cap", "nested_repo"] }
+      }
+    },
     "rest_activity": {
       "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/activity. The ticket's column moves, oldest first.",
       "type": "object",
@@ -878,6 +917,14 @@
     },
     "rest_archive": {
       "description": "REST: POST /api/boards/{key}/archive, body {archived: boolean} -> 202, one set_archived rpc to the board's devbox; its rpc_result arrives on /ws/ui. 404 unknown board, 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
+    "rest_sync_box": {
+      "description": "REST: POST /api/devboxes/{devbox}/sync, body {force?: boolean} -> 202, one sync_box rpc to the devbox; the outcome arrives as health.last_sync after the daemon reconnects. 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
+    "rest_board_brief": {
+      "description": "REST: POST /api/boards/{key}/brief (no body) -> 202, one refresh_board_brief rpc to the board's devbox: a board-brief synthesis run now. synthesis_* events (nn null) and the rpc_result arrive on /ws/ui. 404 unknown board, 409 devbox offline.",
       "$ref": "#/$defs/rest_scan"
     },
     "rest_propose_memory": {

@@ -91,6 +91,14 @@ describe("BoardBar policy", () => {
     expect(screen.queryByRole("dialog", { name: "Board policy" })).toBeNull();
   });
 
+  it("opens the board panel and closes it on Escape", () => {
+    const { bar } = setup();
+    fireEvent.click(within(bar).getByRole("button", { name: "📄 Board" }));
+    expect(screen.getByRole("dialog", { name: "Board" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Board" })).toBeNull();
+  });
+
   const group = (pop: HTMLElement, name: string) => within(pop).getByRole("group", { name });
   const sync = (store: ReturnType<typeof createStore>, patch: (b: Board) => Board) =>
     act(() => store.apply({ type: "board_synced", board: patch(store.view().boards.find((b) => b.key === KEY)!) }));

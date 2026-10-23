@@ -14,6 +14,7 @@ const DEVBOXES = "dev-daniel/devboxes/tk-hub"; // 05 at needs
 function setup(open: [string, string]) {
   const client: DetailApi = {
     activity: vi.fn().mockResolvedValue([]),
+    diff: vi.fn().mockResolvedValue({ files: [] }),
     report: vi.fn().mockResolvedValue({ full_report_md: null, body: "" }),
     launch: vi.fn().mockResolvedValue(undefined),
     proposeMemory: vi.fn().mockResolvedValue(true),

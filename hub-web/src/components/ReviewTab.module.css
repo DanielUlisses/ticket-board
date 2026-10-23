@@ -1,0 +1,74 @@
+/* The Review tab: no horizontal scroll at phone width, long lines wrap. */
+.files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.row {
+  font: inherit;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.stats {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.plus {
+  color: var(--diff-add-fg);
+}
+.minus {
+  color: var(--diff-remove-fg);
+}
+.panel {
+  border-top: 1px solid var(--border);
+}
+.diff {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+/* react-diff-view wraps with word-break: break-all; wrap at word edges first,
+   anywhere only when a word alone is too long (no sideways scroll at 375px). */
+.diff :global(.diff-code) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.note {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}

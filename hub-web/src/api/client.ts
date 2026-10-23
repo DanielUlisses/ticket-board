@@ -14,6 +14,8 @@ import type {
   ActionResponse,
   ActivityEvent,
   ActivityResponse,
+  DiffFileResponse,
+  DiffListResponse,
   BoardsResponse,
   HubSettings,
   PolicyEdit,
@@ -174,6 +176,13 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     return (await res.json()) as T;
   }
 
+  /** The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff. */
+  function diff(boardKey: string, nn: string): Promise<DiffListResponse>;
+  function diff(boardKey: string, nn: string, file: string): Promise<DiffFileResponse>;
+  function diff(boardKey: string, nn: string, file?: string) {
+    return getJson(ticketUrl(boardKey, nn, "diff") + (file === undefined ? "" : `?file=${encodeURIComponent(file)}`));
+  }
+
   return {
     /** The ticket's full report and raw body (ticket sheet's report modal). */
     report: (boardKey: string, nn: string) => getJson<ReportResponse>(ticketUrl(boardKey, nn, "report")),
@@ -187,6 +196,8 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     /** Ticks (or unticks) a checklist item, matched by its text, in the box's hub-meta. */
     setTaskDone: (boardKey: string, nn: string, text: string, done: boolean) =>
       postToast(ticketUrl(boardKey, nn, "tasks"), { text, done }, "Checklist tick"),
+    /** The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff (read-only). */
+    diff,
     /** The ticket's column moves, oldest first. */
     activity: async (boardKey: string, nn: string): Promise<ActivityEvent[]> =>
       (await getJson<ActivityResponse>(ticketUrl(boardKey, nn, "activity"))).events,
@@ -226,6 +237,10 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         text: skipped.length > 0 ? `${launching}; skipped ${skipped.join(", ")}` : launching,
       });
       return res.rpcs;
+    },
+    /** 📄 Board's ↻ Refresh: a board-brief synthesis run now; true when the hub took it. The brief itself arrives with the board's next snapshot. */
+    async refreshBrief(boardKey: string): Promise<boolean> {
+      return (await action("Board brief", boardUrl(boardKey, "brief"))) !== null;
     },
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {
@@ -322,6 +337,20 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         else store.toast({ kind: "error", text: `${verb} failed: ${await errorText(res)}` });
       } catch (err) {
         store.toast({ kind: "error", text: `${verb} failed: ${(err as Error).message}` });
+      }
+    },
+    /** ⟳ Sync box: the hub asks the box's daemon to start `devbox sync`; a refusal (tickets working or in review, a sync already running, systemd-run failing: its stderr) comes back as its rpc_result, which the store toasts. */
+    async syncBox(devbox: string, force: boolean) {
+      try {
+        const res = await doFetch(`${origin}/api/devboxes/${encodeURIComponent(devbox)}/sync`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ force }),
+        });
+        if (res.ok) store.toast({ kind: "ok", text: `⟳ Sync sent to ${devbox}` });
+        else store.toast({ kind: "error", text: `⟳ Sync failed: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `⟳ Sync failed: ${(err as Error).message}` });
       }
     },
   };

@@ -41,9 +41,30 @@
   --glyph-review-border: #fde68a;
   --glyph-review-bg: #fffbeb;
 
-  /* Review diff backgrounds (ticket 25). NOT from the prototype: placeholders. */
-  --diff-add-bg: rgb(22 163 74 / 0.1);
-  --diff-remove-bg: rgb(220 38 38 / 0.1);
+  /* Review diff (ticket 25). NOT from the prototype. The tints derive from the icon
+     palette (--icon-working green, --icon-urgent red) and are translucent so they
+     sit on any surface; the theme is light-only today, so there is no dark set yet. */
+  --diff-add-fg: var(--icon-working);
+  --diff-remove-fg: var(--icon-urgent);
+  --diff-add-bg: color-mix(in srgb, var(--icon-working) 10%, transparent);
+  --diff-remove-bg: color-mix(in srgb, var(--icon-urgent) 10%, transparent);
+  --diff-add-edit-bg: color-mix(in srgb, var(--icon-working) 28%, transparent);
+  --diff-remove-edit-bg: color-mix(in srgb, var(--icon-urgent) 28%, transparent);
+
+  /* react-diff-view's own custom properties, themed with the tokens above. */
+  --diff-background-color: transparent;
+  --diff-text-color: var(--text-primary);
+  --diff-font-family: var(--font-mono);
+  --diff-gutter-insert-background-color: var(--diff-add-bg);
+  --diff-gutter-delete-background-color: var(--diff-remove-bg);
+  --diff-gutter-selected-background-color: var(--surface-subtle);
+  --diff-code-insert-background-color: var(--diff-add-bg);
+  --diff-code-delete-background-color: var(--diff-remove-bg);
+  --diff-code-insert-edit-background-color: var(--diff-add-edit-bg);
+  --diff-code-delete-edit-background-color: var(--diff-remove-edit-bg);
+  --diff-code-selected-background-color: var(--surface-subtle);
+  --diff-selection-background-color: var(--surface-subtle);
+  --diff-omit-gutter-line-color: var(--icon-urgent);
 
   color-scheme: light;
 }
