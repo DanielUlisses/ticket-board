@@ -9,28 +9,13 @@ import subprocess
 import sys
 
 import pytest
-from conftest import DAEMON_DIR, row, schema_errors
+from conftest import DAEMON_DIR, NAME, row, schema_errors
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 DAEMON = DAEMON_DIR / "tk-daemon.py"
 TOKEN = "tok-3f9c1d2e-not-a-real-secret"
 TOKEN_REF = "op://Devboxes/tk-hub/dev-test"
-NAME = "hub.test"  # the hub's MagicDNS name, as in the certificate
-
-
-@pytest.fixture(scope="session")
-def cert(tmp_path_factory):
-    d = tmp_path_factory.mktemp("cert")
-    subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-         "-nodes", "-keyout", d / "key.pem", "-out", d / "cert.pem", "-days", "2",
-         "-subj", f"/CN={NAME}", "-addext", f"subjectAltName=DNS:{NAME}",
-         "-addext", "basicConstraints=critical,CA:TRUE",
-         "-addext", "keyUsage=critical,digitalSignature,keyCertSign"],
-        check=True, capture_output=True,
-    )  # fmt: skip
-    return d / "cert.pem", d / "key.pem"
 
 
 class FakeHub:
@@ -475,7 +460,7 @@ def test_rpcs_outside_the_daemons_list_are_rejected_without_running_anything(box
             await hub.next("snapshot")
             calls = len(box.tk_calls())
             await hub.send(
-                {"type": "rpc", "id": "r-2", "method": "launch_ticket", "params": {}}
+                {"type": "rpc", "id": "r-2", "method": "open_pr", "params": {}}
             )
             await hub.ws.send(
                 json.dumps(

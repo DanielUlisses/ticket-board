@@ -48,12 +48,15 @@ def _open_objects(schema):
 
 SCHEMA = json.loads(find_schema().read_text())
 VALIDATOR = Draft202012Validator(_open_objects(SCHEMA))
+# What the hub itself sends (rpcs) is checked as written: no unknown properties.
+STRICT = Draft202012Validator(SCHEMA)
 
 
-def problem(message) -> str | None:
-    """The first way a daemon's `message` breaks the schema (unknown properties
-    allowed), or None when it is valid."""
-    error = next(iter(VALIDATOR.iter_errors(message)), None)
+def problem(message, strict: bool = False) -> str | None:
+    """The first way `message` breaks the schema, or None when it is valid. A
+    daemon's message may carry unknown properties; a `strict` check (what the
+    hub sends) refuses them."""
+    error = next(iter((STRICT if strict else VALIDATOR).iter_errors(message)), None)
     if error is None:
         return None
     where = "".join(f"/{p}" for p in error.absolute_path) or "<root>"
