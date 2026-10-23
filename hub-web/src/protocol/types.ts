@@ -68,6 +68,24 @@ export interface Ticket {
   synthesis_status: SynthesisStatus;
 }
 
+/** `$defs/policy` (subset): `tk.sh policy <board>`, resolved. */
+export interface Policy {
+  forge: "github" | "azure" | "none";
+  require_human_before_pr: boolean;
+  auto_merge: boolean;
+  night_shift: boolean;
+  autonomy: "assist" | "auto";
+  max_parallel: number;
+  usage_gate_pct: number;
+}
+
+export type PolicySource = "default" | "box" | "repo" | "board" | "env" | "detected" | "no-remote";
+
+/** The board-override keys the UI may write (`rest_set_policy`); null removes a key's override. */
+export type PolicyEdit = {
+  [K in "forge" | "require_human_before_pr" | "auto_merge" | "night_shift" | "autonomy"]?: Policy[K] | null;
+};
+
 /** `$defs/board` (subset). `stale`/`last_seen` are added by the hub. */
 export interface Board {
   key: string;
@@ -77,6 +95,9 @@ export interface Board {
   repo: string;
   forge: "github" | "azure" | "none";
   project_memory: string | null;
+  policy: Policy;
+  /** Which layer each policy key came from; keys it omits are defaults. */
+  policy_sources?: Partial<Record<keyof Policy, PolicySource>>;
   hub_meta: { archived: boolean };
   hash: string;
   exported_at: Timestamp;

@@ -7,7 +7,7 @@
 //   - POST /api/scan with `{"devbox": "<name>" | null}` (null: every box), any
 //     2xx meaning the rescan was sent; the outcome arrives later as rpc_result;
 //   - errors carry FastAPI's `{"detail": "..."}`.
-import type { ActivityEvent, BoardsResponse, ReportResponse, UiEvent } from "../protocol/types";
+import type { ActivityEvent, BoardsResponse, PolicyEdit, ReportResponse, UiEvent } from "../protocol/types";
 import type { Store } from "../store/store";
 
 /** The part of the browser WebSocket the client uses. */
@@ -118,6 +118,21 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         socket.close();
         socket = null;
       }
+    },
+    /** Writes the board's policy override (tk.sh policy-set); the new resolved policy arrives with its next snapshot. */
+    async setPolicy(boardKey: string, values: PolicyEdit): Promise<boolean> {
+      try {
+        const res = await doFetch(`${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/policy`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ values }),
+        });
+        if (res.ok) return true;
+        store.toast({ kind: "error", text: `Policy not saved: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `Policy not saved: ${(err as Error).message}` });
+      }
+      return false;
     },
     /** ↻ Scan: a forced full rescan of one devbox, or every box when null. */
     async scan(devbox: string | null) {
