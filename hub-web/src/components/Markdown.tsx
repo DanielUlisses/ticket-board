@@ -1,5 +1,5 @@
 import { isValidElement, useState, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import styles from "./Markdown.module.css";
 
@@ -30,10 +30,12 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 }
 
 /** Untrusted markdown, sanitized (rehype-sanitize's default schema), with copy buttons on code blocks. */
-export function Markdown({ source }: { source: string }) {
+export function Markdown({ source, compact = false }: { source: string; compact?: boolean }) {
+  // compact: for a sheet field or list item: tight spacing, and the host sets the size.
+  const components: Components = { pre: CodeBlock };
   return (
-    <div className={styles.md}>
-      <ReactMarkdown rehypePlugins={[rehypeSanitize]} components={{ pre: CodeBlock }}>
+    <div className={compact ? styles.compact : styles.md}>
+      <ReactMarkdown rehypePlugins={[rehypeSanitize]} components={components}>
         {source}
       </ReactMarkdown>
     </div>
