@@ -4,7 +4,7 @@
 // Components read it through `view()` (a cached snapshot, stable between
 // changes, so it plugs into useSyncExternalStore) and never keep their own copy.
 import { COLUMN_META, type Group } from "../columns";
-import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, UiEvent } from "../protocol/types";
+import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, SynthesisEvent, UiEvent } from "../protocol/types";
 
 /** The Stage select and the pills: one filter, over the column groups. */
 export type Stage = "all" | Group;
@@ -56,6 +56,8 @@ export interface View {
   settled: Readonly<Record<string, boolean>>;
   /** The last pane_tail per ticket, by `ticketId`. */
   panes: Readonly<Record<string, Pane>>;
+  /** The last merge_pr / verify_landed result per ticket, by `ticketId` (gate lines, landed + PR). */
+  ship: Readonly<Record<string, RpcResult>>;
 }
 
 interface State {
@@ -69,6 +71,7 @@ interface State {
   pending: SentRpc[];
   settled: Record<string, boolean>;
   panes: Record<string, Pane>;
+  ship: Record<string, RpcResult>;
 }
 
 const NO_FILTER: Filter = { devbox: null, board: null, stage: "all" };
@@ -121,6 +124,22 @@ function rpcToast(r: RpcResult): Omit<Toast, "id"> {
   return { kind: "error", text: `${prefix}failed: ${why}` };
 }
 
+/**
+ * A synthesis event's change to its ticket: running while a backend works (the content
+ * and its backend stay), ok by the backend that wrote the result (the content itself
+ * follows with board_synced), failed with the reason (the last good content stays).
+ */
+function synthesisPatch(e: SynthesisEvent, t: Ticket): Partial<Ticket> {
+  switch (e.type) {
+    case "synthesis_started":
+      return { synthesis_status: "running" };
+    case "synthesis_finished":
+      return { synthesis_status: "ok", synthesis_backend: e.backend ?? t.synthesis_backend, synthesis_error: null };
+    case "synthesis_failed":
+      return { synthesis_status: "failed", synthesis_error: e.error ?? null };
+  }
+}
+
 export function createStore() {
   let state: State = {
     page: "cards",
@@ -133,6 +152,7 @@ export function createStore() {
     pending: [],
     settled: {},
     panes: {},
+    ship: {},
   };
   let cached: View | null = null;
   let nextToast = 1;
@@ -165,11 +185,26 @@ export function createStore() {
   const mapBoards = (pred: (b: Board) => boolean, fn: (b: Board) => Board) =>
     state.boards.map((b) => (pred(b) ? fn(b) : b));
 
+  /** Drops the kept merge/verify results of tickets whose PR changed in `next`, so the live gates show again. */
+  function shipAfter(next: Board[]): Record<string, RpcResult> {
+    const ship = { ...state.ship };
+    for (const b of next) {
+      const old = state.boards.find((o) => o.key === b.key);
+      for (const t of b.tickets) {
+        const was = old?.tickets.find((o) => o.nn === t.nn);
+        const id = ticketId(b.key, t.nn);
+        if (was && id in ship && JSON.stringify(was.pr) !== JSON.stringify(t.pr)) delete ship[id];
+      }
+    }
+    return ship;
+  }
+
   function apply(event: UiEvent) {
     switch (event.type) {
       case "board_synced": {
         const known = state.boards.some((b) => b.key === event.board.key);
         set({
+          ship: shipAfter([event.board]),
           boards: known
             ? mapBoards((b) => b.key === event.board.key, () => event.board)
             : [...state.boards, event.board],
@@ -230,13 +265,33 @@ export function createStore() {
         }
         // Also kept for a result that beats its POST's answer (track then ignores it).
         const settled = Object.entries({ ...state.settled, [event.id]: event.ok }).slice(-SETTLED_KEPT);
-        set({ pending, settled: Object.fromEntries(settled) });
+        const keep =
+          (event.method === "merge_pr" || event.method === "verify_landed") && event.board_key && event.nn
+            ? { ship: { ...state.ship, [ticketId(event.board_key, event.nn)]: event } }
+            : {};
+        set({ pending, settled: Object.fromEntries(settled), ...keep });
         toast(rpcToast(event));
         return;
       }
-      default:
-        // synthesis_* belong to the ticket sheet and board panel (tickets 17, 18).
+      case "synthesis_started":
+      case "synthesis_finished":
+      case "synthesis_failed": {
+        // nn null is the board brief (ticket 18).
+        const board = event.nn === null ? undefined : state.boards.find((b) => b.key === event.board_key);
+        if (!board?.tickets.some((t) => t.nn === event.nn)) return;
+        set({
+          boards: mapBoards(
+            (b) => b === board,
+            (b) => ({
+              ...b,
+              tickets: b.tickets.map((t) => (t.nn === event.nn ? { ...t, ...synthesisPatch(event, t) } : t)),
+            }),
+          ),
+        });
+        if (event.type === "synthesis_failed")
+          toast({ kind: "error", text: `Synthesis of #${event.nn} failed: ${event.error ?? "no reason given"}` });
         return;
+      }
     }
   }
 
@@ -293,12 +348,13 @@ export function createStore() {
       pending: state.pending,
       settled: state.settled,
       panes: state.panes,
+      ship: state.ship,
     };
   }
 
   return {
     load(data: BoardsResponse) {
-      set({ boards: data.boards, devboxes: data.devboxes });
+      set({ ship: shipAfter(data.boards), boards: data.boards, devboxes: data.devboxes });
     },
     apply,
     setFilter(patch: Partial<Filter>) {

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Fake ticket-skill tk.sh: `boards`, `export <path>`, `policy <path>`, `help`, with
+"""Fake ticket-skill tk.sh: `boards`, `export <path>`, `policy <path>`, `show <path> <NN>
+<lines>`, `help`, with
 the real verbs' output shape. Each call is appended to $FAKE_TK_LOG as
 {"argv", "cwd", "pid"}. A board's rows come from <board>/rows.json; a board holding
 `export-fails` fails its export, one holding `export-slow` (seconds) is slow to
 export, one holding `export-stubborn` (seconds) is as slow and ignores SIGTERM.
-`<repo>/.scratch/boards-out` replaces what `boards` prints. $FAKE_TK_HELP_FAILS
+`<repo>/.scratch/boards-out` replaces what `boards` prints. `show` prints the board's
+`show-<NN>.txt`, else a canned line; `show-fails` makes it fail. $FAKE_TK_HELP_FAILS
 makes `help` fail; $FAKE_TK_HELP_PROSE adds prose naming policy files to it.
 The `policy` verb exists (and `help` lists it) only when $FAKE_TK_POLICY is set:
 then `resolved-policy.json` answers it and `policy-fails` makes it fail; `policy-set` then
@@ -16,7 +18,9 @@ exits 0, or exits with `<board>/launch-exit` (the row left alone); it holds for
 text as "message" and exits with `<board>/say-exit` (20: at a dialog, 21: no
 agent) or 0. `show <board> <NN> <lines>` prints the last <lines> lines of
 `<board>/pane.txt`, or exits 21 when `<board>/agent-gone` exists; it writes
-`<board>/show-stderr` to stderr, if there."""
+`<board>/show-stderr` to stderr, if there. The ship verbs `pr`, `push`, `merge`,
+`resolve` and `why` (`<verb> <board> <NN> [...]`) print `<board>/<verb>-out` and
+exit with `<board>/<verb>-exit` (0 when absent)."""
 
 import json
 import os
@@ -111,15 +115,34 @@ elif verb == "say":
            21: "NOT SENT — tk-agent isn't running"}[code])  # fmt: skip
     sys.exit(code)
 elif verb == "show":
-    board = Path(args[1])
+    board, nn = Path(args[1]), args[2]
+    if (board / "show-fails").exists():
+        sys.exit("ERROR: herdr is down")
     if (board / "show-stderr").exists():
         print((board / "show-stderr").read_text(), file=sys.stderr)
     if (board / "agent-gone").exists():
         print("tk-agent isn't running")
         sys.exit(21)
     pane = board / "pane.txt"
-    lines = pane.read_text().splitlines() if pane.exists() else []
-    print("\n".join(lines[-int(args[3]) :]))
+    if (board / f"show-{nn}.txt").exists():
+        print((board / f"show-{nn}.txt").read_text())
+    elif pane.exists():
+        print("\n".join(pane.read_text().splitlines()[-int(args[3]) :]))
+    else:
+        print(f"tk show {nn}: the agent pane tail")
+elif verb in ("pr", "push", "merge", "resolve", "why"):
+    board = Path(args[1])
+    if verb == "resolve" and "--no-code" in args and (board / "landed").exists():
+        # tk.sh resolve_no_code: a landed ticket has code, so only plain resolve.
+        print(
+            f"ERROR: ticket {args[2]} landed (yes:ancestry) - it has code; use plain resolve, not --no-code",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    out = board / f"{verb}-out"
+    print(out.read_text() if out.exists() else f"{verb.upper()} ok")
+    code = board / f"{verb}-exit"
+    sys.exit(int(code.read_text()) if code.exists() else 0)
 elif verb == "policy" and has_policy:
     board = Path(args[1])
     if (board / "policy-fails").exists():

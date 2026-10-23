@@ -118,3 +118,18 @@
   border-radius: 10px;
   padding: 8px 10px;
 }
+.gates {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.gates [data-status="fail"] {
+  color: var(--text-primary);
+  font-weight: 600;
+}

@@ -86,6 +86,31 @@ def test_say_and_pane_tail_are_routed_with_the_ticket_added(client, add_token):
     ]
 
 
+def test_ship_verbs_are_routed_and_resolve_needs_a_reason(client, add_token):
+    with connect_daemon(client, add_token("dev-daniel")) as (daemon, _):
+        daemon.send_json(snapshot())
+        for method in ("open_pr", "ssh_push", "merge_pr", "verify_landed"):
+            r = client.post(action_url("27"), json={"method": method, "params": {}})
+            assert r.status_code == 202
+        resolve = {"method": "resolve_nocode", "params": {"reason": "notes only"}}
+        assert client.post(action_url("27"), json=resolve).status_code == 202
+        no_reason = {"method": "resolve_nocode", "params": {}}
+        assert client.post(action_url("27"), json=no_reason).status_code == 422
+        blank = {"method": "resolve_nocode", "params": {"reason": ""}}
+        assert client.post(action_url("27"), json=blank).status_code == 422
+        plain = {"method": "resolve_ticket", "params": {}}
+        assert client.post(action_url("27"), json=plain).status_code == 202
+        rpcs = [daemon.receive_json() for _ in range(6)]
+
+    for rpc in rpcs:
+        assert_valid(rpc)
+    assert [r["method"] for r in rpcs] == [
+        "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
+        "resolve_ticket",
+    ]  # fmt: skip
+    assert rpcs[4]["params"]["reason"] == "notes only"
+
+
 def test_an_action_the_schema_rejects_or_outside_the_list_is_422_and_sends_nothing(
     client, add_token
 ):

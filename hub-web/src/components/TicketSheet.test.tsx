@@ -1,12 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { BoardSynced, ReportResponse, TicketMoved } from "../protocol/types";
+import type { BoardSynced, ReportResponse, SynthesisEvent, TicketMoved } from "../protocol/types";
 import { createStore } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { CardGrid } from "./CardGrid";
 import { LiveBoard } from "./LiveBoard";
 import { StoreProvider } from "./StoreContext";
-import { TicketSheet, type DetailApi } from "./TicketSheet";
+import { TICK_CONFIRM_MS, TicketSheet, type DetailApi } from "./TicketSheet";
 
 const KEY = "dev-daniel/ticket-skill/tk-hub";
 
@@ -26,6 +26,10 @@ function stubClient(): DetailApi {
     say: async () => null,
     paneTail: async () => {},
     proposeMemory: async () => true,
+    ship: async () => true,
+    resolveNoCode: async () => true,
+    refine: async () => true,
+    setTaskDone: async () => true,
   };
 }
 
@@ -36,10 +40,14 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
       { from: "working", to: "review", at: "2026-10-23T15:40:00Z" },
     ]),
     report: vi.fn().mockResolvedValue(REPORT),
+    refine: vi.fn().mockResolvedValue(true),
+    setTaskDone: vi.fn().mockResolvedValue(true),
     proposeMemory: vi.fn().mockResolvedValue(true),
     launch: vi.fn().mockResolvedValue(undefined),
     say: vi.fn().mockResolvedValue(null),
     paneTail: vi.fn().mockResolvedValue(undefined),
+    ship: vi.fn().mockResolvedValue(true),
+    resolveNoCode: vi.fn().mockResolvedValue(true),
     ...api,
   };
   const store = createStore();
@@ -253,6 +261,110 @@ describe("TicketSheet", () => {
     expect(within(checklist).getByRole("checkbox", { name: "Run make test" })).toBeChecked();
     expect(within(checklist).getByRole("checkbox", { name: "Open docs" })).not.toBeChecked();
     expect(boxes.length).toBe(2);
+  });
+});
+
+describe("checklist and refine", () => {
+  const checklist = () => within(sheet()).getByRole("region", { name: "Manual Validation Checklist" });
+  const box = (name: string) => within(checklist()).getByRole("checkbox", { name }) as HTMLInputElement;
+  const UNKNOWN = "Check an unknown board exits non-zero";
+  const started = (): SynthesisEvent => fixture<SynthesisEvent>("synthesis-started");
+
+  it("a tick goes to the hub and shows at once", async () => {
+    const { client } = setup();
+    fireEvent.click(box(UNKNOWN));
+    expect(client.setTaskDone).toHaveBeenCalledWith(KEY, "01", UNKNOWN, true);
+    expect(box(UNKNOWN).checked).toBe(true);
+    fireEvent.click(box("Run tk.sh export against a real board and pipe through jq -e"));
+    expect(client.setTaskDone).toHaveBeenLastCalledWith(
+      KEY,
+      "01",
+      "Run tk.sh export against a real board and pipe through jq -e",
+      false,
+    );
+  });
+
+  it("a tick the hub refuses is undone", async () => {
+    setup([KEY, "01"], { setTaskDone: vi.fn().mockResolvedValue(false) });
+    fireEvent.click(box(UNKNOWN));
+    await waitFor(() => expect(box(UNKNOWN).checked).toBe(false));
+  });
+
+  it("a tick the box never confirms is undone after TICK_CONFIRM_MS", async () => {
+    vi.useFakeTimers();
+    try {
+      setup();
+      fireEvent.click(box(UNKNOWN));
+      expect(box(UNKNOWN).checked).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TICK_CONFIRM_MS);
+      });
+      expect(box(UNKNOWN).checked).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("✦ Update via agy is disabled while a run is running", () => {
+    const { store } = setup();
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    act(() => store.apply(started()));
+    expect(within(card).getByRole("button", { name: "✦ Update via agy" })).toBeDisabled();
+  });
+
+  it("marks developer items", () => {
+    setup();
+    const item = box("Try it on the home-assistant board too").closest("li")!;
+    expect(within(item).getByText("you")).toBeInTheDocument();
+  });
+
+  it("✦ Update via agy sends the comment and spins until the run finishes", async () => {
+    const { store, client } = setup();
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    expect(within(card).queryByRole("status", { name: "Synthesis running" })).not.toBeInTheDocument();
+    fireEvent.change(within(card).getByRole("textbox", { name: "Comment for agy" }), {
+      target: { value: "Shorter, please." },
+    });
+    fireEvent.click(within(card).getByRole("button", { name: "✦ Update via agy" }));
+    expect(client.refine).toHaveBeenCalledWith(KEY, "01", "Shorter, please.");
+    expect(within(card).getByRole("status", { name: "Synthesis running" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "✦ Update via agy" })).toBeDisabled();
+    await waitFor(() => expect(within(card).getByRole("textbox", { name: "Comment for agy" })).toHaveValue(""));
+    act(() => store.apply(started()));
+    expect(within(card).getByText("agy · running")).toBeInTheDocument();
+    act(() => store.apply({ ...started(), type: "synthesis_finished" }));
+    expect(within(card).queryByRole("status", { name: "Synthesis running" })).not.toBeInTheDocument();
+    expect(within(card).getByText("agy · ok")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "✦ Update via agy" })).toBeEnabled();
+  });
+
+  it("a refine the hub refuses stops the spinner and keeps the comment", async () => {
+    setup([KEY, "01"], { refine: vi.fn().mockResolvedValue(false) });
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    fireEvent.change(within(card).getByRole("textbox", { name: "Comment for agy" }), { target: { value: "x" } });
+    fireEvent.click(within(card).getByRole("button", { name: "✦ Update via agy" }));
+    await waitFor(() =>
+      expect(within(card).queryByRole("status", { name: "Synthesis running" })).not.toBeInTheDocument(),
+    );
+    expect(within(card).getByRole("textbox", { name: "Comment for agy" })).toHaveValue("x");
+  });
+
+  it("a failed run shows its reason under the backend label", () => {
+    const { store } = setup();
+    act(() =>
+      store.apply({ ...fixture<SynthesisEvent>("synthesis-failed"), board_key: KEY, nn: "01", error: "agy: invalid output" }),
+    );
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    expect(within(card).getByText("agy · failed")).toBeInTheDocument();
+    expect(within(card).getByText("agy: invalid output")).toBeInTheDocument();
+  });
+
+  it("shows the run's new_memory_rule as a suggestion", () => {
+    setup();
+    const mem = within(sheet()).getByRole("region", { name: "Project Memory" });
+    expect(within(mem).getByLabelText("Suggested memory rule")).toHaveTextContent(
+      "Export verbs print JSON only on stdout; everything else goes to stderr.",
+    );
   });
 });
 
