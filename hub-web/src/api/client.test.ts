@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Ajv2020 from "ajv/dist/2020";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TicketMoved } from "../protocol/types";
+import type { SchedulerEntry, TicketMoved } from "../protocol/types";
 import { createStore } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { createHubClient, type SocketLike } from "./client";
@@ -385,5 +385,36 @@ describe("ticket actions", () => {
       const client = answering("rest_report", body);
       expect(await client.report(KEY, "27")).toEqual(body);
     });
+  });
+});
+
+describe("hub settings and the scheduler log", () => {
+  it("load on start, and setSettings posts and applies the hub's answer", async () => {
+    const settings = { total_cap: 8, waves: false, waves_start: null };
+    const logged = fixture<{ entry: SchedulerEntry }>("scheduler-log").entry;
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/api/boards")) return json(boardsResponse());
+      if (url.endsWith("/api/scheduler")) return json({ entries: [logged] });
+      if (init?.method === "POST") return json({ ...settings, ...JSON.parse(String(init.body)) });
+      return json(settings);
+    });
+    const store = createStore();
+    const client = createHubClient(store, {
+      origin: "https://hub",
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      WebSocket: FakeSocket,
+    });
+
+    await client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.view().settings).toEqual(settings);
+    expect(store.view().schedulerLog).toEqual([logged]);
+
+    expect(await client.setSettings({ total_cap: 5 })).toBe(true);
+    const [url, init] = fetch.mock.calls.at(-1)!;
+    expect(url).toBe("https://hub/api/settings");
+    expect(JSON.parse(String(init?.body))).toEqual({ total_cap: 5 });
+    expect(store.view().settings?.total_cap).toBe(5);
+    client.stop();
   });
 });

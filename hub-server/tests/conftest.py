@@ -33,6 +33,9 @@ REST_DEFS = [
     ("POST", re.compile(r"^/api/boards/.+/tickets/[^/]+/comment$"), "rest_refine"),
     ("POST", re.compile(r"^/api/boards/.+/tickets/[^/]+/tasks$"), "rest_set_task_done"),
     ("POST", re.compile(r"^/api/boards/.+/memory$"), "rest_propose_memory"),
+    ("GET", re.compile(r"^/api/settings$"), "rest_settings"),
+    ("POST", re.compile(r"^/api/settings$"), "rest_settings"),
+    ("GET", re.compile(r"^/api/scheduler$"), "rest_scheduler"),
 ]
 
 
@@ -97,6 +100,9 @@ def make_client(db):
     clients = []
 
     def make(**kwargs):
+        # The scheduler would launch the fixtures' frontier under every test;
+        # the tests that want it ask for it.
+        kwargs.setdefault("schedule", False)
         client = TestClient(create_app(db_path=db, **kwargs))
         client.event_hooks = {"request": [], "response": [check_rest_response]}
         client.__enter__()

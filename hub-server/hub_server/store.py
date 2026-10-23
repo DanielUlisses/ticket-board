@@ -1,6 +1,6 @@
 """The hub's SQLite (stdlib sqlite3): a rebuildable cache of board snapshots plus
-hub-only data (token hashes, devbox registry, activity log). board.md, Source of
-truth."""
+hub-only data (token hashes, devbox registry, activity log, hub settings, the
+scheduler's log and its retry counts). board.md, Source of truth."""
 
 import hashlib
 import hmac
@@ -40,7 +40,32 @@ CREATE TABLE IF NOT EXISTS activity (
     at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS activity_ticket ON activity (board_key, nn);
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scheduler_log (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    at        TEXT NOT NULL,
+    action    TEXT NOT NULL,
+    method    TEXT,
+    devbox    TEXT,
+    board_key TEXT,
+    nn        TEXT,
+    reason    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ticket_retries (
+    board_key TEXT NOT NULL,
+    nn        TEXT NOT NULL,
+    col       TEXT NOT NULL,
+    failed    INTEGER NOT NULL,
+    given_up  TEXT,
+    pr        INTEGER,
+    PRIMARY KEY (board_key, nn)
+);
 """
+SCHEDULER_LOG_KEPT = 500
+LOG_FIELDS = ("at", "action", "method", "devbox", "board_key", "nn", "reason")
 
 
 def now() -> str:
@@ -66,6 +91,12 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        # ticket_retries.pr came after the table: add it to an older database.
+        columns = {
+            row["name"] for row in self.db.execute("PRAGMA table_info(ticket_retries)")
+        }
+        if "pr" not in columns:
+            self.db.execute("ALTER TABLE ticket_retries ADD COLUMN pr INTEGER")
         self.boards = Boards(self.db)
 
     def close(self):
@@ -125,6 +156,76 @@ class Store:
     def devbox_statuses(self) -> list[dict]:
         rows = self.db.execute("SELECT * FROM devboxes ORDER BY name").fetchall()
         return [_devbox_status(row) for row in rows]
+
+    # -- hub settings and the scheduler's log ---------------------------------
+
+    def settings(self) -> dict:
+        """The hub settings stored so far (the scheduler holds the defaults)."""
+        rows = self.db.execute("SELECT key, value FROM settings").fetchall()
+        return {row["key"]: json.loads(row["value"]) for row in rows}
+
+    def update_settings(self, values: dict):
+        self.db.executemany(
+            "INSERT INTO settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [(key, json.dumps(value)) for key, value in values.items()],
+        )
+
+    def log_decision(self, entry: dict) -> dict:
+        """Append a scheduler decision, keeping the last SCHEDULER_LOG_KEPT;
+        returns it with its id."""
+        values = [entry.get(f) for f in LOG_FIELDS]
+        cursor = self.db.execute(
+            f"INSERT INTO scheduler_log ({', '.join(LOG_FIELDS)})"
+            f" VALUES ({', '.join('?' for _ in LOG_FIELDS)})",
+            values,
+        )
+        self.db.execute(
+            "DELETE FROM scheduler_log WHERE id <= ?",
+            (cursor.lastrowid - SCHEDULER_LOG_KEPT,),
+        )
+        return {"id": cursor.lastrowid, **dict(zip(LOG_FIELDS, values, strict=True))}
+
+    def retries(self) -> dict[tuple[str, str], dict]:
+        """The scheduler's failed attempts per ticket: the column they were
+        counted in, how many failed, and why it gave up (or None)."""
+        rows = self.db.execute("SELECT * FROM ticket_retries").fetchall()
+        return {
+            (row["board_key"], row["nn"]): {
+                "col": row["col"], "failed": row["failed"],
+                "given_up": row["given_up"], "pr": row["pr"],
+            }
+            for row in rows
+        }  # fmt: skip
+
+    def put_retry(self, board_key: str, nn: str, retry: dict):
+        self.db.execute(
+            "INSERT INTO ticket_retries (board_key, nn, col, failed, given_up, pr)"
+            " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (board_key, nn) DO UPDATE SET"
+            " col = excluded.col, failed = excluded.failed,"
+            " given_up = excluded.given_up, pr = excluded.pr",
+            (
+                board_key,
+                nn,
+                retry["col"],
+                retry["failed"],
+                retry["given_up"],
+                retry.get("pr"),
+            ),
+        )
+
+    def drop_retry(self, board_key: str, nn: str):
+        self.db.execute(
+            "DELETE FROM ticket_retries WHERE board_key = ? AND nn = ?",
+            (board_key, nn),
+        )
+
+    def decisions(self, limit: int = 100) -> list[dict]:
+        """The scheduler's latest decisions, newest first."""
+        rows = self.db.execute(
+            "SELECT * FROM scheduler_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 
 def _devbox_status(row: sqlite3.Row) -> dict:

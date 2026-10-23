@@ -27,7 +27,11 @@ async function renderApp() {
     Promise.resolve(
       url.endsWith("/api/boards")
         ? new Response(JSON.stringify(boardsResponse()))
-        : new Response("{}", { status: 202 }),
+        : url.endsWith("/api/settings")
+          ? new Response(JSON.stringify({ total_cap: 8, waves: false, waves_start: null }))
+          : url.endsWith("/api/scheduler")
+            ? new Response(JSON.stringify({ entries: [] }))
+            : new Response("{}", { status: 202 }),
     ),
   );
   const client = createHubClient(store, {
@@ -45,13 +49,16 @@ const pill = (name: RegExp) => screen.getByRole("button", { name });
 const cardNumbers = () => articles().map((a) => a.getAttribute("aria-label")!.split(" ")[0]);
 
 describe("App", () => {
-  it("shows the navbar: brand, page switch, Scan and a Night placeholder", async () => {
+  it("shows the navbar: brand, page switch, Scan, Scheduler and Run waves", async () => {
     await renderApp();
     const nav = screen.getByRole("navigation");
     expect(nav).toHaveTextContent("-{|}- tk-hub");
     expect(within(nav).getByRole("button", { name: "Cards" })).toHaveAttribute("aria-pressed", "true");
     expect(within(nav).getByRole("button", { name: /Scan/ })).toBeEnabled();
-    expect(within(nav).getByRole("button", { name: /Night/ })).toBeDisabled();
+    expect(within(nav).getByRole("button", { name: "Scheduler" })).toBeInTheDocument();
+    // Enabled once the hub settings have loaded.
+    await waitFor(() => expect(within(nav).getByRole("button", { name: "▶ Run waves" })).toBeEnabled());
+    expect(nav).not.toHaveTextContent(/Night/);
   });
 
   it("switches between Cards and Live Board", async () => {

@@ -1,0 +1,135 @@
+/* ▶ Run waves and the Scheduler panel: navbar pills (Navbar .btnPill) with PolicyPopover's panel. */
+.anchor {
+  position: relative;
+  display: inline-flex;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pill:hover:not(:disabled) {
+  border-color: var(--text-primary);
+}
+.pill:disabled {
+  cursor: not-allowed;
+  color: var(--text-faint);
+}
+/* Running (or scheduled): the working colour, never a dark fill. */
+.pill[aria-pressed="true"] {
+  border-color: var(--glyph-working-border);
+  background: var(--glyph-working-bg);
+  color: var(--icon-working);
+}
+.pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 260px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wide {
+  width: min(420px, calc(100vw - 28px));
+}
+.section {
+  margin: 4px 0 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.field {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.capRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.capRow .field {
+  width: 64px;
+}
+.action {
+  align-self: flex-end;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  border: 1px solid var(--text-primary);
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.action:disabled {
+  border-color: var(--border);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+.log {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 50dvh;
+  overflow-y: auto;
+}
+.entry {
+  padding: 4px 0;
+  border-top: 1px solid var(--surface-subtle);
+  line-height: 1.4;
+}
+.at,
+.what,
+.board {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.at,
+.board {
+  color: var(--text-faint);
+}
+.what {
+  font-weight: 600;
+}
+.entry[data-action="sent"] .what {
+  color: var(--icon-working);
+}
+.entry[data-action="failed"] .what {
+  color: var(--icon-urgent);
+}
+.reason {
+  color: var(--text-secondary);
+}

@@ -102,6 +102,14 @@ class Hub:
         self._tasks: set[asyncio.Task] = set()
         self.ui: set[WebSocket] = set()
         self.daemons: dict[str, WebSocket] = {}
+        # Boxes that sent a snapshot since they connected (and since this hub
+        # started): what the scheduler knows to be current.
+        self.snapshotted: set[str] = set()
+        # The scheduler's hooks: a state change it may act on (a snapshot, a
+        # box coming or going), and every rpc_result.
+        # A hook that fails is logged, never allowed to break a connection.
+        self.on_change: Callable[[], None] = lambda: None
+        self.on_rpc_result: Callable[[dict], None] = lambda result: None
         # A restarted hub has no daemons yet: every box is offline, every board stale.
         self.store.db.execute("UPDATE devboxes SET online = 0")
         self.store.boards.mark_stale()
@@ -124,7 +132,7 @@ class Hub:
                     "dropping a UI socket that stalled for %ss", self.ui_send_timeout
                 )
                 self.ui.discard(ws)
-                self._spawn(_close_quietly(ws))
+                self.spawn(_close_quietly(ws))
             except SEND_ERRORS:  # a UI that went away mid-send
                 self.ui.discard(ws)
 
@@ -185,6 +193,7 @@ class Hub:
     async def connected(self, devbox: str, ws: WebSocket, hello: dict):
         old = self.daemons.get(devbox)
         self.daemons[devbox] = ws
+        self.snapshotted.discard(devbox)
         self.store.update_devbox(
             devbox,
             online=True,
@@ -199,11 +208,13 @@ class Hub:
                 await old.close()
         await self._finish_all(orphaned)
         await self.broadcast(self._status(devbox))
+        self._changed()
 
     async def disconnected(self, devbox: str, ws: WebSocket):
         if self.daemons.get(devbox) is not ws:
             return  # replaced by a newer connection
         del self.daemons[devbox]
+        self.snapshotted.discard(devbox)
         self.store.update_devbox(devbox, online=False, last_seen=now())
         self.store.boards.mark_stale(devbox)
         keys = self.store.boards.keys(devbox)
@@ -213,6 +224,7 @@ class Hub:
         for key in keys:
             await self.broadcast(self._synced(key))
         await self.broadcast(self._status(devbox))
+        self._changed()
 
     async def received(self, devbox: str, ws: WebSocket, message):
         if self.daemons.get(devbox) is not ws:
@@ -264,7 +276,7 @@ class Hub:
         seconds = self.timeout(method)
         timed_out = _failed(rpc_id, f"timed out after {seconds:g}s")
         rpc.timer = loop.call_later(
-            seconds, lambda: self._spawn(self._finish(rpc_id, timed_out))
+            seconds, lambda: self.spawn(self._finish(rpc_id, timed_out))
         )
         try:
             await ws.send_json(
@@ -309,7 +321,14 @@ class Hub:
                 sent.append({"id": rpc_id, "devbox": target})
         return sent
 
-    def _spawn(self, coro):
+    def _changed(self):
+        try:
+            self.on_change()
+        except Exception:
+            log.exception("the scheduler failed on a state change")
+
+    def spawn(self, coro):
+        """Run `coro` in the background, keeping a reference until it is done."""
         task = asyncio.ensure_future(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -340,6 +359,10 @@ class Hub:
             result["board_key"] = rpc.board_key
         if rpc.nn is not None:
             result["nn"] = rpc.nn
+        try:
+            self.on_rpc_result(result)
+        except Exception:
+            log.exception("the scheduler failed on an rpc_result")
         await self.broadcast(result)
 
     async def apply_snapshot(self, devbox: str, snapshot: dict):
@@ -349,6 +372,7 @@ class Hub:
         boards = self.store.boards
         at = now()
         self.store.update_devbox(devbox, last_seen=at, health=snapshot.get("health"))
+        self.snapshotted.add(devbox)
         prefix = f"{devbox}/"
         events = []
         received = []
@@ -387,6 +411,7 @@ class Hub:
         events.append(self._status(devbox))
         for event in events:
             await self.broadcast(event)
+        self._changed()
 
 
 async def _close_quietly(ws: WebSocket):
