@@ -85,10 +85,25 @@ export interface Board {
   last_seen?: Timestamp | null;
 }
 
+/** `$defs/usage_window`. */
+export interface UsageWindow {
+  used_percentage: number;
+  resets_at: Timestamp;
+}
+
+/** `$defs/usage`: unknown has null windows; stale is older than 30 min while agents run. */
+export interface Usage {
+  state: "ok" | "unknown" | "stale";
+  five_hour: UsageWindow | null;
+  seven_day: UsageWindow | null;
+  updated_at: Timestamp | null;
+}
+
 /** `$defs/health` (subset). */
 export interface Health {
   daemon_version: string;
   herdr: { ok: boolean; status: string };
+  usage?: Usage;
   running: number;
 }
 
