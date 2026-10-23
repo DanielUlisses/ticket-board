@@ -11,6 +11,9 @@ import { TicketSheet, type DetailApi } from "./TicketSheet";
 const KEY = "dev-daniel/ticket-skill/tk-hub";
 
 const REPORT = {
+  board_key: KEY,
+  nn: "01",
+  title: "Export",
   full_report_md: "## Coordinator report\n\n```sh\ntk.sh export tk-hub\n```",
   body: "# Ticket body\n\nDo the thing.\n\n```py\nprint('hi')\n```",
 };
@@ -203,7 +206,7 @@ describe("report modal", () => {
 
   it("strips script and HTML injection from both documents", async () => {
     const evil = `<script>window.__pwned=1</script><img src=x onerror="window.__pwned=1"><a href="javascript:alert(1)">x</a>`;
-    setup([KEY, "01"], { report: async () => ({ full_report_md: `# R\n\n${evil}`, body: `# B\n\n${evil}` }) });
+    setup([KEY, "01"], { report: async () => ({ ...REPORT, full_report_md: `# R\n\n${evil}`, body: `# B\n\n${evil}` }) });
     fireEvent.click(within(sheet()).getByRole("button", { name: "⤢ Full Review & Reasoning" }));
     const m = await screen.findByRole("dialog", { name: "Full Review & Reasoning" });
     await within(m).findByRole("heading", { name: "R" });

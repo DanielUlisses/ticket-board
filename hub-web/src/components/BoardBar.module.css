@@ -42,3 +42,19 @@
   color: var(--text-faint);
   white-space: nowrap;
 }
+.end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings {
+  position: relative;
+}
+.gear {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 1px 7px;
+  cursor: pointer;
+}

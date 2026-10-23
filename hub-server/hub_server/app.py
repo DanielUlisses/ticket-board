@@ -6,11 +6,12 @@ import json
 import logging
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hub_server import PROTOCOL_VERSION
@@ -161,6 +162,23 @@ class ArchiveRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     devbox: str | None = None
+
+
+class PolicyValues(BaseModel):
+    """The board-override keys the UI may write; box-level keys (max_parallel,
+    usage_gate_pct, synthesis) are not among them. An explicit null removes the board
+    override of that key (it inherits again)."""
+
+    model_config = ConfigDict(extra="forbid")
+    forge: Literal["github", "azure", "none"] | None = None
+    require_human_before_pr: bool | None = None
+    auto_merge: bool | None = None
+    night_shift: bool | None = None
+    autonomy: Literal["assist", "auto"] | None = None
+
+
+class PolicyRequest(BaseModel):
+    values: PolicyValues
 
 
 def create_app(
@@ -324,6 +342,29 @@ def create_app(
             # (an extra ticket property; the schema allows them).
             "body": found.get("body"),
         }
+
+    @app.post("/api/boards/{board_key:path}/policy", status_code=202)
+    async def set_policy(board_key: str, request: PolicyRequest):
+        """set_policy on the board's devbox: tk.sh policy-set writes the board
+        override, the board's next snapshot carries the result."""
+        board = hub.store.boards.get(board_key)
+        if not board:
+            raise HTTPException(404, f"no board {board_key}")
+        values = request.values.model_dump(exclude_unset=True)
+        if not values:
+            raise HTTPException(422, "no policy values to set")
+        try:
+            rpc_id = await hub.send_rpc(
+                board["devbox"],
+                "set_policy",
+                {"board_key": board_key, "values": values},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(
+                404, f"devbox {board['devbox']} is not connected"
+            ) from None
+        return {"rpc": {"id": rpc_id, "devbox": board["devbox"]}}
 
     @app.post("/api/scan", status_code=202)
     async def scan(request: ScanRequest | None = None):

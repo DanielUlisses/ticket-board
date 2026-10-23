@@ -39,6 +39,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import signal
 import socket
 import sys
@@ -63,6 +64,15 @@ DEFAULTS = {
     "hello_timeout_s": 30,
     "export_timeout_s": 60,
     "export_call_timeout_s": 30,
+}
+# The board-override keys set_policy may write, mirroring tk.sh's POLICY_CHECK; box-level
+# keys (max_parallel, usage_gate_pct, synthesis) are not among them.
+POLICY_WRITABLE = {
+    "autonomy": lambda v: v in ("assist", "auto"),
+    "forge": lambda v: v in ("github", "azure", "none"),
+    "require_human_before_pr": lambda v: isinstance(v, bool),
+    "auto_merge": lambda v: isinstance(v, bool),
+    "night_shift": lambda v: isinstance(v, bool),
 }
 SYNTHESIS_RPCS = frozenset({"refine_with_comment", "refresh_board_brief", "run_retro"})
 FAILED = re.compile(r"^tk-export: failed (\S+)(?: (/.*))?$", re.MULTILINE)
@@ -214,12 +224,15 @@ def kill_session(sid: int):
                 os.kill(int(name), signal.SIGKILL)
 
 
-async def run_cmd(argv: list[str], env: dict | None = None) -> tuple[int, str, str]:
+async def run_cmd(
+    argv: list[str], env: dict | None = None, cwd: str | None = None
+) -> tuple[int, str, str]:
     """Run a command in its own session; cancelling (a timeout, SIGTERM) kills
     everything in that session."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
         env=env,
+        cwd=cwd,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -248,6 +261,7 @@ class Daemon:
         self.rpcs = {
             "rescan_boards": self.rpc_rescan_boards,
             "set_archived": self.rpc_set_archived,
+            "set_policy": self.rpc_set_policy,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -409,6 +423,33 @@ class Daemon:
             "exit_code": 0,
             "output_tail": f"{key} archived={str(flag).lower()}",
         }
+
+    async def rpc_set_policy(self, ws, params: dict) -> dict:
+        """`tk.sh policy-set <board> key=value…` in the repo's main checkout; the
+        re-export after every RPC then carries the new resolved policy."""
+        board = self.sent.get(params.get("board_key"))
+        values = params.get("values")
+        if board is None or not isinstance(values, dict) or not values:
+            raise ValueError(f"no board {params.get('board_key')!r} on this box")
+        for k, v in values.items():
+            allowed = POLICY_WRITABLE.get(k)
+            if allowed is None or not (v is None or allowed(v)):
+                raise ValueError(
+                    f"policy {k}={v!r} is not a writable board-override value"
+                )
+        tk = os.environ.get("TK_SH") or (
+            "tk.sh"
+            if shutil.which("tk.sh")
+            else str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
+        )
+        # Each value as JSON, so tk.sh reads back the type it was sent (quoting keeps a
+        # string a string even when it looks like JSON); None is `key=`, which removes
+        # the board override.
+        args = [f"{k}={'' if v is None else json.dumps(v)}" for k, v in values.items()]
+        code, out, err = await run_cmd(
+            [tk, "policy-set", board["board_path"], *args], cwd=board["root"]
+        )
+        return {"ok": code == 0, "exit_code": code, "output_tail": out + err}
 
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")

@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import type { BoardSynced } from "../protocol/types";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { BoardSynced, Devbox, UiEvent, Usage } from "../protocol/types";
 import { createStore } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { CardGrid } from "./CardGrid";
@@ -21,14 +21,14 @@ function renderGrid(prepare?: (store: ReturnType<typeof createStore>) => void) {
 const boardSection = (repo: string) => screen.getByRole("region", { name: new RegExp(`^tk-hub ${repo}`) });
 
 describe("CardGrid", () => {
-  it("draws a board bar per board: id pill, title, devbox and forge sub-pills", () => {
+  it("draws a board bar per board: id pill, title, devbox and autonomy · forge sub-pills", () => {
     renderGrid();
     expect(screen.getAllByRole("region")).toHaveLength(3);
     const bar = boardSection("devboxes");
     expect(within(bar).getByText("tk-hub")).toBeInTheDocument();
     expect(within(bar).getByRole("heading", { name: "devboxes" })).toBeInTheDocument();
     expect(within(bar).getByText("dev-daniel")).toBeInTheDocument();
-    expect(within(bar).getByText("none")).toBeInTheDocument();
+    expect(within(bar).getByText("assist · none")).toBeInTheDocument();
   });
 
   it("a card shows the column's glyph in its variant, #NN title, summary, tag pills and checks metric", () => {
@@ -88,6 +88,50 @@ describe("CardGrid", () => {
     const acme = screen.getByText("dev-acme").closest("[data-health]");
     expect(acme).toHaveAttribute("data-health", "refused");
     expect(acme).toHaveAttribute("title", expect.stringContaining("major differs"));
+  });
+
+  afterEach(() => vi.useRealTimers());
+  const at = (iso: string) => vi.useFakeTimers({ toFake: ["Date"], now: new Date(iso) });
+
+  it("the devbox sub-pill shows the usage meter, reset times on hover", () => {
+    at("2026-10-23T14:05:00Z"); // the fixture's windows are still ahead
+    renderGrid();
+    const meter = within(boardSection("devboxes")).getByText("5h 42% · wk 72%");
+    expect(meter).toHaveAttribute("data-usage", "ok");
+    expect(meter).toHaveAttribute("title", expect.stringContaining("5h resets 2026-10-23 17:00Z"));
+    expect(meter).toHaveAttribute("title", expect.stringContaining("wk resets 2026-10-27 09:00Z"));
+  });
+
+  it("marks usage that is unknown or stale", () => {
+    const online = fixture<Devbox & { type: string }>("devbox-status-online");
+    const withUsage = (usage: Usage) =>
+      renderGrid((store) => store.apply({ ...online, health: { ...online.health!, usage } } as UiEvent));
+    const pill = () => within(boardSection("devboxes"));
+
+    cleanup();
+    withUsage({ state: "unknown", five_hour: null, seven_day: null, updated_at: null });
+    expect(pill().getByText("usage unknown")).toHaveAttribute("data-usage", "unknown");
+
+    cleanup();
+    withUsage({ ...online.health!.usage!, state: "stale" });
+    const stale = pill().getByText("5h 42% · wk 72% (stale)");
+    expect(stale).toHaveAttribute("data-usage", "stale");
+    expect(stale).toHaveAttribute("title", expect.stringContaining("updated 2026-10-23 14:01Z"));
+  });
+
+  it("says a window already reset in the past tense", () => {
+    at("2026-10-23T14:05:00Z");
+    const online = fixture<Devbox & { type: string }>("devbox-status-online");
+    const usage: Usage = {
+      ...online.health!.usage!,
+      five_hour: { used_percentage: 0, resets_at: "2020-01-01T00:00:00Z" },
+      seven_day: { used_percentage: 72, resets_at: "2099-01-01T00:00:00Z" },
+    };
+    renderGrid((store) => store.apply({ ...online, health: { ...online.health!, usage } } as UiEvent));
+
+    const meter = within(boardSection("devboxes")).getByText("5h 0% · wk 72%");
+    expect(meter).toHaveAttribute("title", expect.stringContaining("5h reset 2020-01-01 00:00Z"));
+    expect(meter).toHaveAttribute("title", expect.stringContaining("wk resets 2099-01-01 00:00Z"));
   });
 
   it("follows the store's filters", () => {

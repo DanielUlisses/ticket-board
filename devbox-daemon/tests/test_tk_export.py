@@ -155,6 +155,41 @@ def test_without_the_policy_verb_policy_is_the_box_repo_board_layers(box):
     assert [c["argv"][0] for c in box.tk_calls()].count("policy") == 0
 
 
+def test_policy_sources_name_the_layer_each_value_comes_from(box):
+    box.write(
+        ".config/tk-daemon/policy.json", {"max_parallel": 3, "autonomy": "assist"}
+    )
+    box.write(
+        "work/alpha/.scratch/policy.json", {"autonomy": "auto", "night_shift": True}
+    )
+    box.board(
+        "alpha",
+        "b",
+        [row("01")],
+        {"policy.json": {"auto_merge": True, "night_shift": False}},
+    )
+
+    b = boards_by_key(snapshot(box))["dev-test/alpha/b"]
+    env = boards_by_key(snapshot(box, TICKET_FORGE="github"))["dev-test/alpha/b"]
+
+    assert b["policy_sources"] == {
+        "forge": "detected", "require_human_before_pr": "default", "auto_merge": "board",
+        "night_shift": "board", "autonomy": "repo", "max_parallel": "box",
+        "usage_gate_pct": "default", "synthesis": "default"}  # fmt: skip
+    assert env["policy_sources"]["forge"] == "env"
+
+
+def test_forge_of_a_repo_without_a_remote_is_sourced_no_remote_even_with_the_env(box):
+    box.board("alpha", "b", [row("01")], {"no-remote": ""})
+
+    plain = boards_by_key(snapshot(box))["dev-test/alpha/b"]
+    env = boards_by_key(snapshot(box, TICKET_FORGE="github"))["dev-test/alpha/b"]
+
+    assert plain["policy_sources"]["forge"] == "no-remote"
+    assert env["policy_sources"]["forge"] == "no-remote"
+    assert plain["policy_sources"]["autonomy"] == "default"
+
+
 def test_a_tk_sh_policy_error_fails_the_board_and_reaches_stderr(box):
     box.board("alpha", "good", [row("01")], {"resolved-policy.json": RESOLVED})
     box.board("alpha", "bad", [row("01")], {"policy-fails": ""})
@@ -230,6 +265,20 @@ def test_usage_expired_window_is_zero_and_old_data_is_stale_while_agents_run(box
         "seven_day": {"used_percentage": 50, "resets_at": "2099-01-01T00:00:00Z"},
         "updated_at": "2020-01-01T00:00:00Z",
     }
+
+
+def test_old_data_is_stale_while_agents_run_even_when_no_window_has_expired(box):
+    box.board("alpha", "b", [row("01", "working")])
+    box.write(".local/state/tk-daemon/usage.json", {
+        "five_hour": {"used_percentage": 40, "resets_at": "2099-01-01T00:00:00Z"},
+        "seven_day": {"used_percentage": 50, "resets_at": "2099-01-02T00:00:00Z"},
+        "updated_at": "2020-01-01T00:00:00Z"})  # fmt: skip
+
+    usage = snapshot(box)["health"]["usage"]
+
+    assert usage["state"] == "stale"
+    assert usage["five_hour"]["used_percentage"] == 40
+    assert usage["seven_day"]["used_percentage"] == 50
 
 
 def test_board_hash_is_stable_and_changes_with_content(box):

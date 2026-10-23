@@ -92,6 +92,11 @@ class FakeHub:
         await self.ws.send(json.dumps(msg))
 
 
+POLICY = {"forge": "none", "require_human_before_pr": True, "auto_merge": False,
+          "night_shift": False, "autonomy": "auto", "max_parallel": 5,
+          "usage_gate_pct": 90, "synthesis": {"backends": ["agy"], "timeout": 300}}  # fmt: skip
+
+
 @contextlib.asynccontextmanager
 async def daemon(box, hub, cert, name=NAME, **config):
     box.write(".config/tk-daemon/config.json", {
@@ -215,6 +220,119 @@ def test_rescan_boards_sends_a_full_snapshot_with_new_boards_and_removed_ones(
     assert result["type"] == "rpc_result"
     assert (result["id"], result["ok"], result["exit_code"]) == ("r-1", True, 0)
     assert "dev-test/alpha/vanishes" in result["output_tail"]
+
+
+def test_set_policy_writes_the_board_override_through_tk_sh_and_the_change_round_trips(
+    box, cert
+):
+    box.env["FAKE_TK_POLICY"] = "1"
+    b = box.board("alpha", "b", [row("01")], {"resolved-policy.json": POLICY})
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            await hub.send(
+                {
+                    "type": "rpc",
+                    "id": "r-p",
+                    "method": "set_policy",
+                    "params": {
+                        "board_key": "dev-test/alpha/b",
+                        "values": {"autonomy": "assist", "auto_merge": True},
+                    },
+                }
+            )
+            return await hub.next("rpc_result"), await hub.next("snapshot")
+
+    result, snap = run(scenario())
+
+    assert (result["id"], result["ok"], result["exit_code"]) == ("r-p", True, 0)
+    call = [c for c in box.tk_calls() if c["argv"][0] == "policy-set"]
+    assert [c["argv"] for c in call] == [
+        ["policy-set", str(b), 'autonomy="assist"', "auto_merge=true"]
+    ]
+    assert call[0]["cwd"] == str(b.parent.parent)  # the repo's main checkout
+    assert json.loads((b / "policy.json").read_text()) == {
+        "autonomy": "assist", "auto_merge": True}  # fmt: skip
+    policy = snap["boards"][0]["policy"]
+    assert (policy["autonomy"], policy["auto_merge"]) == ("assist", True)
+
+
+def test_set_policy_failures_are_reported_with_tk_shs_message(box, cert):
+    box.env["FAKE_TK_POLICY"] = "1"
+    box.board("alpha", "b", [row("01")], {"resolved-policy.json": POLICY,
+                                          "policy-set-fails": ""})  # fmt: skip
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            await hub.send({"type": "rpc", "id": "r-p", "method": "set_policy",
+                            "params": {"board_key": "dev-test/alpha/b", "values": {"autonomy": "auto"}}})  # fmt: skip
+            await hub.send({"type": "rpc", "id": "r-q", "method": "set_policy",
+                            "params": {"board_key": "dev-test/alpha/nope", "values": {"autonomy": "auto"}}})  # fmt: skip
+            return await hub.next("rpc_result"), await hub.next("rpc_result")
+
+    results = {r["id"]: r for r in run(scenario())}
+    failed, unknown = results["r-p"], results["r-q"]
+
+    assert (failed["ok"], failed["exit_code"]) == (False, 1)
+    assert "not written" in failed["output_tail"]
+    assert unknown["ok"] is False and "no board" in unknown["reason"]
+
+
+def test_set_policy_null_sends_an_empty_value_that_removes_the_override(box, cert):
+    box.env["FAKE_TK_POLICY"] = "1"
+    b = box.board(
+        "alpha",
+        "b",
+        [row("01")],
+        {"resolved-policy.json": POLICY, "policy.json": {"autonomy": "assist", "auto_merge": True}},
+    )  # fmt: skip
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            await hub.send({"type": "rpc", "id": "r-n", "method": "set_policy",
+                            "params": {"board_key": "dev-test/alpha/b", "values": {"autonomy": None}}})  # fmt: skip
+            return await hub.next("rpc_result")
+
+    result = run(scenario())
+
+    assert result["ok"] is True
+    call = [c["argv"] for c in box.tk_calls() if c["argv"][0] == "policy-set"]
+    assert call == [["policy-set", str(b), "autonomy="]]
+    assert json.loads((b / "policy.json").read_text()) == {"auto_merge": True}
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"max_parallel": 3},
+        {"synthesis": {"backends": []}},
+        {"autonomy": "turbo"},
+        {"forge": "gitlab"},
+        {"auto_merge": "true"},
+        {"night_shift": 1},
+        {"autonomy": "auto", "usage_gate_pct": 50},
+    ],
+)
+def test_set_policy_refuses_unknown_keys_and_bad_values_without_calling_tk_sh(
+    box, cert, values
+):
+    box.env["FAKE_TK_POLICY"] = "1"
+    box.board("alpha", "b", [row("01")], {"resolved-policy.json": POLICY})
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            await hub.send({"type": "rpc", "id": "r-bad", "method": "set_policy",
+                            "params": {"board_key": "dev-test/alpha/b", "values": values}})  # fmt: skip
+            return await hub.next("rpc_result")
+
+    result = run(scenario())
+
+    assert result["ok"] is False and result["reason"]
+    assert [c for c in box.tk_calls() if c["argv"][0] == "policy-set"] == []
 
 
 def test_an_rpc_past_its_timeout_is_killed_and_reported_and_the_daemon_carries_on(
