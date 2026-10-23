@@ -1,0 +1,8 @@
+{
+  "type": "rpc",
+  "id": "r-0021",
+  "method": "sync_box",
+  "params": {
+    "force": false
+  }
+}

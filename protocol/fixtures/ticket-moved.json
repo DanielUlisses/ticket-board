@@ -1,0 +1,8 @@
+{
+  "type": "ticket_moved",
+  "board_key": "dev-daniel/ticket-skill/tk-hub",
+  "nn": "01",
+  "from": "review",
+  "to": "human",
+  "at": "2026-10-23T13:57:30Z"
+}

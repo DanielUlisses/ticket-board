@@ -1,0 +1,12 @@
+{
+  "type": "rpc",
+  "id": "r-0011",
+  "method": "set_policy",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "values": {
+      "autonomy": "assist",
+      "auto_merge": true
+    }
+  }
+}

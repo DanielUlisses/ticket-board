@@ -1,0 +1,10 @@
+{
+  "type": "rpc",
+  "id": "r-0004",
+  "method": "pane_tail",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "lines": 180
+  }
+}

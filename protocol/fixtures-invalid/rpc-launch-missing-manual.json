@@ -1,0 +1,12 @@
+{
+  "type": "rpc",
+  "id": "r-0002",
+  "method": "launch_ticket",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "type": "feat",
+    "model": "sonnet",
+    "effort": "low"
+  }
+}

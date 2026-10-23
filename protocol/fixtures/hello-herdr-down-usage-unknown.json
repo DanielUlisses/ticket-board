@@ -1,0 +1,26 @@
+{
+  "type": "hello",
+  "protocol_version": "1.0",
+  "devbox": "dev-acme",
+  "health": {
+    "daemon_version": "0.1.1",
+    "herdr": {
+      "ok": false,
+      "status": "herdr: cannot connect to ~/.config/herdr/herdr.sock"
+    },
+    "usage": {
+      "state": "unknown",
+      "five_hour": null,
+      "seven_day": null,
+      "updated_at": null
+    },
+    "running": 0,
+    "last_sync": {
+      "started_at": "2026-10-23T12:00:05Z",
+      "finished_at": "2026-10-23T12:03:41Z",
+      "exit_code": 0,
+      "log_path": "/home/daniel/.local/state/tk-daemon/sync-20261023T120005Z.log",
+      "log_tail": "devbox sync: 3 packages updated\ntk-daemon restarted"
+    }
+  }
+}

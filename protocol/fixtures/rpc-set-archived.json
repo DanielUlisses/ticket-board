@@ -1,0 +1,9 @@
+{
+  "type": "rpc",
+  "id": "r-0012",
+  "method": "set_archived",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "archived": true
+  }
+}

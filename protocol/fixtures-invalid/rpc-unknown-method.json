@@ -1,0 +1,8 @@
+{
+  "type": "rpc",
+  "id": "r-0002",
+  "method": "run_shell",
+  "params": {
+    "cmd": "rm -rf ~"
+  }
+}

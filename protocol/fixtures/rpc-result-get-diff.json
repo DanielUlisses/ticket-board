@@ -1,0 +1,24 @@
+{
+  "type": "rpc_result",
+  "id": "r-0012",
+  "ok": true,
+  "exit_code": 0,
+  "output_tail": "",
+  "data": {
+    "diff_hash": "sha256:9f2c1e",
+    "files": [
+      {
+        "path": "skills/implement-tickets/scripts/tk.sh",
+        "status": "M",
+        "added": 34,
+        "removed": 2
+      },
+      {
+        "path": "docs/agents/export.md",
+        "status": "A",
+        "added": 41,
+        "removed": 0
+      }
+    ]
+  }
+}

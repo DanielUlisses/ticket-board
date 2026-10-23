@@ -1,0 +1,12 @@
+{
+  "type": "rpc_result",
+  "id": "r-0009",
+  "ok": false,
+  "exit_code": 21,
+  "output_tail": "tk-feat-05-install-agy-and-cursor isn't running",
+  "reason": "no agent: the ticket's agent isn't running",
+  "devbox": "dev-daniel",
+  "method": "say_agent",
+  "board_key": "dev-daniel/devboxes/tk-hub",
+  "nn": "05"
+}

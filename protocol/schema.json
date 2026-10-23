@@ -1,0 +1,727 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tk-hub/protocol/schema.json",
+  "title": "tk-hub protocol",
+  "description": "Every message exchanged between devbox-daemon, hub-server and hub-web. One document is one message; `type` selects its shape. Daemon -> hub: hello, snapshot, rpc_result. Hub -> daemon: welcome, refused, rpc. Hub -> UI (/ws/ui): board_synced, board_removed, ticket_moved, synthesis_started, synthesis_finished, synthesis_failed, rpc_result, devbox_status. A major `protocol_version` mismatch is refused.",
+  "x-protocol-version": "1.0",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": { "$ref": "#/$defs/message_type" }
+  },
+  "allOf": [
+    { "if": { "required": ["type"], "properties": { "type": { "const": "hello" } } }, "then": { "$ref": "#/$defs/hello" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "welcome" } } }, "then": { "$ref": "#/$defs/welcome" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "refused" } } }, "then": { "$ref": "#/$defs/refused" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "snapshot" } } }, "then": { "$ref": "#/$defs/snapshot" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "rpc" } } }, "then": { "$ref": "#/$defs/rpc" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "rpc_result" } } }, "then": { "$ref": "#/$defs/rpc_result" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "board_synced" } } }, "then": { "$ref": "#/$defs/board_synced" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "board_removed" } } }, "then": { "$ref": "#/$defs/board_removed" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "ticket_moved" } } }, "then": { "$ref": "#/$defs/ticket_moved" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "synthesis_started" } } }, "then": { "$ref": "#/$defs/synthesis_event" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "synthesis_finished" } } }, "then": { "$ref": "#/$defs/synthesis_event" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "synthesis_failed" } } }, "then": { "$ref": "#/$defs/synthesis_failed" } },
+    { "if": { "required": ["type"], "properties": { "type": { "const": "devbox_status" } } }, "then": { "$ref": "#/$defs/devbox_status" } }
+  ],
+  "$defs": {
+    "message_type": {
+      "enum": [
+        "hello", "welcome", "refused", "snapshot", "rpc", "rpc_result",
+        "board_synced", "board_removed", "ticket_moved",
+        "synthesis_started", "synthesis_finished", "synthesis_failed",
+        "devbox_status"
+      ]
+    },
+
+    "protocol_version": {
+      "description": "MAJOR.MINOR. The hub refuses a daemon whose major differs from its own.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 date-time in UTC, always with a `Z` suffix (no offsets), e.g. 2026-10-23T14:02:11Z.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "name": {
+      "description": "A devbox, repo or board name: one path segment.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "board_key": {
+      "description": "Board identity `<devbox>/<repo>/<board>` (board.md, Source of truth).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+    },
+    "nn": {
+      "description": "Ticket number as written on the board, zero-padded (\"07\").",
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "rpc_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "synthesis_backend": { "enum": ["agy", "cursor", "claude"] },
+    "synthesis_status": {
+      "description": "none: never run; running: a backend is working on it; ok: last run succeeded; failed: last run failed and the previous good content is kept.",
+      "enum": ["none", "running", "ok", "failed"]
+    },
+    "column": { "enum": ["needs", "backlog", "blocked", "working", "review", "human", "pr", "done"] },
+
+    "usage_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["used_percentage", "resets_at"],
+      "properties": {
+        "used_percentage": { "type": "number", "minimum": 0, "maximum": 100 },
+        "resets_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "usage": {
+      "description": "Claude plan usage for the box's account, from ~/.local/state/tk-daemon/usage.json. unknown: no data (window fields null); stale: older than 30 min while agents run, still used. An expired window is reported as 0 %.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "five_hour", "seven_day", "updated_at"],
+      "properties": {
+        "state": { "enum": ["ok", "unknown", "stale"] },
+        "five_hour": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/usage_window" }] },
+        "seven_day": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/usage_window" }] },
+        "updated_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] }
+      }
+    },
+    "sync_result": {
+      "description": "The last `devbox sync` started by sync_box, reported after the daemon reconnects.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "exit_code", "log_path", "log_tail"],
+      "properties": {
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "finished_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
+        "exit_code": { "type": ["integer", "null"] },
+        "log_path": { "type": "string" },
+        "log_tail": { "type": "string" }
+      }
+    },
+    "health": {
+      "description": "Sent with hello and with every snapshot. herdr.ok false -> no launches on that box.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["daemon_version", "herdr", "usage", "running"],
+      "properties": {
+        "daemon_version": { "type": "string", "minLength": 1 },
+        "herdr": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok", "status"],
+          "properties": {
+            "ok": { "type": "boolean" },
+            "status": { "description": "Raw `herdr status server` output (or the error).", "type": "string" }
+          }
+        },
+        "usage": { "$ref": "#/$defs/usage" },
+        "running": { "description": "Tickets in column `working` or `review` on this box.", "type": "integer", "minimum": 0 },
+        "last_sync": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sync_result" }] }
+      }
+    },
+
+    "policy": {
+      "description": "Resolved `tk.sh policy <board>` (ticket-skill 02): defaults < box < repo < board, TICKET_FORGE beats forge. Unknown keys pass through.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["forge", "require_human_before_pr", "auto_merge", "night_shift", "autonomy", "max_parallel", "usage_gate_pct", "synthesis"],
+      "properties": {
+        "forge": { "enum": ["github", "azure", "none"] },
+        "require_human_before_pr": { "type": "boolean" },
+        "auto_merge": { "type": "boolean" },
+        "night_shift": { "type": "boolean" },
+        "autonomy": { "enum": ["assist", "auto"] },
+        "max_parallel": { "type": "integer", "minimum": 1 },
+        "usage_gate_pct": { "type": "number", "minimum": 0, "maximum": 100 },
+        "synthesis": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "backends": { "type": "array", "items": { "$ref": "#/$defs/synthesis_backend" } },
+            "timeout": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "policy_sources": {
+      "description": "Which layer each resolved policy key came from, for the policy popover (ticket 13).",
+      "type": "object",
+      "additionalProperties": { "enum": ["default", "box", "repo", "board", "env", "detected"] }
+    },
+
+    "board_brief": {
+      "description": "Live synthesis of where the board stands (ticket 18), stored in hub-meta.json.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["landed", "in_flight", "needs_you", "next", "synthesis_backend", "synthesis_status", "updated_at"],
+      "properties": {
+        "landed": { "type": "array", "items": { "type": "string" } },
+        "in_flight": { "type": "array", "items": { "type": "string" } },
+        "needs_you": { "type": "array", "items": { "type": "string" } },
+        "next": { "type": "array", "items": { "type": "string" } },
+        "synthesis_backend": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/synthesis_backend" }] },
+        "synthesis_status": { "$ref": "#/$defs/synthesis_status" },
+        "updated_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] }
+      }
+    },
+    "hub_meta": {
+      "description": "Board-level fields of .scratch/<board>/hub-meta.json. Per-ticket fields are merged into each ticket instead.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["archived", "board_brief"],
+      "properties": {
+        "archived": { "type": "boolean" },
+        "board_brief": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/board_brief" }] }
+      }
+    },
+
+    "pr": {
+      "description": "ticket-skill's common PR shape (board-lib.sh gh_norm / az_norm).",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["number", "isDraft", "mergeable", "review", "checks"],
+      "properties": {
+        "number": { "type": "integer" },
+        "url": { "type": "string" },
+        "isDraft": { "type": "boolean" },
+        "base": { "type": "string" },
+        "mergeable": { "enum": ["MERGEABLE", "CONFLICTING", "UNKNOWN"] },
+        "review": { "type": "string" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["n", "s"],
+            "properties": {
+              "n": { "type": "string" },
+              "s": { "enum": ["ok", "pending", "bad"] }
+            }
+          }
+        }
+      }
+    },
+    "manual_task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "done", "source"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "done": { "type": "boolean" },
+        "source": {
+          "description": "synthesis: written by a synthesis backend (removed by a later run only if unchecked); developer: added by hand, never removed by synthesis.",
+          "enum": ["synthesis", "developer"]
+        }
+      }
+    },
+    "review_comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "text"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "human_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved", "diff_hash", "at"],
+      "properties": {
+        "approved": { "type": "boolean" },
+        "diff_hash": { "type": "string", "minLength": 1 },
+        "at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+
+    "ticket": {
+      "description": "One `board_rows` row (ticket-skill tk.sh) plus its hub-meta fields. board_rows may grow fields: extra properties are allowed.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "nn", "title", "ref", "file", "status", "branch", "base", "model", "effort", "account", "agent",
+        "blocked_raw", "blockers", "smodel", "seffort", "parent", "worktree", "repo",
+        "state", "landed", "phase", "round", "tab", "pr", "checks", "open_blockers", "col", "note", "hint",
+        "summary", "reviewer_notes", "full_report_md", "manual_tasks", "synthesis_backend", "synthesis_status"
+      ],
+      "properties": {
+        "nn": { "$ref": "#/$defs/nn" },
+        "title": { "type": "string" },
+        "ref": { "description": "Ticket file name.", "type": "string" },
+        "file": { "description": "Absolute path of the ticket file.", "type": "string" },
+        "status": { "enum": ["open", "in-progress", "resolved"] },
+        "branch": { "type": "string" },
+        "base": { "description": "Base sha recorded at launch, or empty.", "type": "string" },
+        "model": { "type": "string" },
+        "effort": { "type": "string" },
+        "account": { "type": "string" },
+        "agent": { "description": "Herdr agent name, or empty.", "type": "string" },
+        "blocked_raw": { "type": "string" },
+        "blockers": { "type": "array", "items": { "$ref": "#/$defs/nn" } },
+        "smodel": { "description": "Suggested model.", "type": "string" },
+        "seffort": { "description": "Suggested effort.", "type": "string" },
+        "parent": { "type": "string" },
+        "worktree": { "type": "string" },
+        "repo": { "description": "The **Repo:** line's repo name, or empty.", "type": "string" },
+        "repo_path": { "type": "string" },
+        "xrefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["repo", "nn"],
+            "properties": { "repo": { "type": "string" }, "nn": { "type": "string" } }
+          }
+        },
+        "unknown_refs": { "type": "array", "items": { "type": "string" } },
+        "foreign": { "type": "string" },
+        "xblockers_open": { "type": "array", "items": { "type": "string" } },
+        "state": {
+          "description": "Herdr agent_status (idle, working, blocked, done, unknown…), `-` no agent, `?` Herdr didn't answer, `gone` agent missing.",
+          "type": "string",
+          "minLength": 1
+        },
+        "landed": {
+          "description": "`-`, `no`, `yes:<how>`, or `unknown:<why>` (board-lib.sh landed).",
+          "type": "string",
+          "pattern": "^(-|no|yes(:.*)?|unknown(:.*)?)$"
+        },
+        "phase": { "type": "string" },
+        "round": { "type": "string", "pattern": "^(r[0-9]+)?$" },
+        "tab": { "type": "string" },
+        "pr": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/pr" }] },
+        "checks": {
+          "description": "Coordinator-reported checks, e.g. {tests: \"pass\", criteria: \"3/5\", review: \"ok\"}; empty when unknown.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "open_blockers": { "type": "array", "items": { "type": "string" } },
+        "col": { "$ref": "#/$defs/column" },
+        "note": { "type": "string" },
+        "hint": { "type": "string" },
+
+        "summary": { "description": "Two-line card summary.", "type": ["string", "null"] },
+        "reviewer_notes": { "description": "One line.", "type": ["string", "null"] },
+        "full_report_md": { "type": ["string", "null"] },
+        "manual_tasks": { "type": "array", "items": { "$ref": "#/$defs/manual_task" } },
+        "synthesis_backend": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/synthesis_backend" }] },
+        "synthesis_status": { "$ref": "#/$defs/synthesis_status" },
+        "new_memory_rule": { "type": ["string", "null"] },
+        "review_comments": { "type": "array", "items": { "$ref": "#/$defs/review_comment" } },
+        "human_review": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/human_review" }] }
+      }
+    },
+
+    "board": {
+      "description": "One board snapshot: `tk.sh export <board>` (ticket-skill 01: board_id, slug, repo, root, base, has_remote, forge, board_path, board_md, retro_results_md, tickets) merged with project memory, hub-meta and the resolved policy by the daemon. `stale`/`last_seen` are added by the hub. additionalProperties is true, like `ticket`, while the export is still evolving: a new export field must not break validation.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "key", "devbox", "board_id", "slug", "repo", "root", "base", "has_remote", "forge", "board_path",
+        "board_md", "retro_results_md", "project_memory", "hub_meta", "policy", "hash", "exported_at", "tickets"
+      ],
+      "properties": {
+        "key": { "$ref": "#/$defs/board_key" },
+        "devbox": { "$ref": "#/$defs/name" },
+        "board_id": { "type": "string", "minLength": 1 },
+        "slug": { "$ref": "#/$defs/name" },
+        "repo": { "$ref": "#/$defs/name" },
+        "root": { "description": "The repo's main checkout.", "type": "string" },
+        "base": { "description": "Base branch.", "type": "string" },
+        "has_remote": { "description": "Whether the repo has the remote tk.sh pushes to; false means no PRs, local merges only.", "type": "boolean" },
+        "forge": { "enum": ["github", "azure", "none"] },
+        "board_path": { "type": "string" },
+        "board_md": { "type": ["string", "null"] },
+        "retro_results_md": { "type": ["string", "null"] },
+        "project_memory": { "description": "Contents of <root>/docs/agents/project-memory.md, or null.", "type": ["string", "null"] },
+        "hub_meta": { "$ref": "#/$defs/hub_meta" },
+        "policy": { "$ref": "#/$defs/policy" },
+        "policy_sources": { "$ref": "#/$defs/policy_sources" },
+        "hash": { "description": "Content hash the daemon uses to send only changed boards.", "type": "string", "minLength": 1 },
+        "exported_at": { "$ref": "#/$defs/timestamp" },
+        "stale": { "type": "boolean" },
+        "last_seen": { "$ref": "#/$defs/timestamp" },
+        "tickets": { "type": "array", "items": { "$ref": "#/$defs/ticket" } }
+      }
+    },
+
+    "hello": {
+      "description": "First message from a daemon on /ws/daemon.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocol_version", "devbox", "health"],
+      "properties": {
+        "type": { "const": "hello" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "devbox": { "$ref": "#/$defs/name" },
+        "health": { "$ref": "#/$defs/health" }
+      }
+    },
+    "welcome": {
+      "description": "Hub accepts the daemon.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocol_version"],
+      "properties": {
+        "type": { "const": "welcome" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" }
+      }
+    },
+    "refused": {
+      "description": "Hub refuses the daemon (bad token, major protocol_version mismatch) and closes the socket.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocol_version", "reason"],
+      "properties": {
+        "type": { "const": "refused" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "snapshot": {
+      "description": "Daemon -> hub. full: every board on the box (boards absent are removed); otherwise only boards whose hash changed, plus `removed`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocol_version", "devbox", "full", "health", "boards", "removed"],
+      "properties": {
+        "type": { "const": "snapshot" },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "devbox": { "$ref": "#/$defs/name" },
+        "full": { "type": "boolean" },
+        "health": { "$ref": "#/$defs/health" },
+        "boards": { "type": "array", "items": { "$ref": "#/$defs/board" } },
+        "removed": { "type": "array", "items": { "$ref": "#/$defs/board_key" } }
+      }
+    },
+
+    "rpc_method": {
+      "description": "The fixed RPC list. The daemon rejects anything else.",
+      "enum": [
+        "rescan_boards",
+        "launch_ticket", "say_agent", "pane_tail",
+        "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
+        "set_policy", "set_archived",
+        "refine_with_comment", "set_task_done", "add_manual_task", "refresh_board_brief",
+        "propose_memory", "run_retro", "retro_apply", "sweep_board",
+        "sync_box",
+        "get_diff", "set_review_comments", "request_changes", "approve_review"
+      ]
+    },
+    "rpc": {
+      "description": "Hub -> daemon. Timeouts: 10 min for synthesis RPCs (refine_with_comment, refresh_board_brief, run_retro), 2 min for the rest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "method", "params"],
+      "properties": {
+        "type": { "const": "rpc" },
+        "id": { "$ref": "#/$defs/rpc_id" },
+        "method": { "$ref": "#/$defs/rpc_method" },
+        "params": { "type": "object" }
+      },
+      "allOf": [
+        { "if": { "required": ["method"], "properties": { "method": { "const": "rescan_boards" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_none" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "launch_ticket" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_launch_ticket" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "say_agent" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_say_agent" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "pane_tail" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_pane_tail" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "enum": ["open_pr", "ssh_push", "merge_pr", "verify_landed", "request_changes"] } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_ticket" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "resolve_nocode" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_resolve_nocode" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "set_policy" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_policy" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "set_archived" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_archived" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "refine_with_comment" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_refine_with_comment" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "set_task_done" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_task_done" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "add_manual_task" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_add_manual_task" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "enum": ["refresh_board_brief", "run_retro", "sweep_board"] } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_board" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "propose_memory" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_propose_memory" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "retro_apply" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_retro_apply" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "sync_box" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_sync_box" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "get_diff" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_get_diff" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "set_review_comments" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_review_comments" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "approve_review" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_approve_review" } } } }
+      ]
+    },
+    "params_none": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "params_board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key"],
+      "properties": { "board_key": { "$ref": "#/$defs/board_key" } }
+    },
+    "params_ticket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" }
+      }
+    },
+    "params_launch_ticket": {
+      "description": "tk.sh launch <board> <NN> --type --model --effort. manual: true bypasses max_parallel and the usage gate (flagged).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "type", "model", "effort", "manual"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "type": { "enum": ["feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci"] },
+        "model": { "type": "string", "minLength": 1 },
+        "effort": { "type": "string", "minLength": 1 },
+        "manual": { "type": "boolean" }
+      }
+    },
+    "params_say_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "message"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    },
+    "params_pane_tail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "lines"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "lines": { "type": "integer", "minimum": 1, "maximum": 2000 }
+      }
+    },
+    "params_resolve_nocode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "reason"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "params_set_policy": {
+      "description": "tk.sh policy-set <board> key=value… on the board override file.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "values"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "values": {
+          "type": "object",
+          "minProperties": 1,
+          "properties": {
+            "forge": { "enum": ["github", "azure", "none"] },
+            "require_human_before_pr": { "type": "boolean" },
+            "auto_merge": { "type": "boolean" },
+            "night_shift": { "type": "boolean" },
+            "autonomy": { "enum": ["assist", "auto"] }
+          }
+        }
+      }
+    },
+    "params_set_archived": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "archived"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "archived": { "type": "boolean" }
+      }
+    },
+    "params_refine_with_comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "comment"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "comment": { "type": "string" }
+      }
+    },
+    "params_set_task_done": {
+      "description": "Tasks are matched by normalised text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "text", "done"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "text": { "type": "string", "minLength": 1 },
+        "done": { "type": "boolean" }
+      }
+    },
+    "params_add_manual_task": {
+      "description": "Adds a developer item (source: developer) to the checklist.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "text"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "params_propose_memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "text"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "params_retro_apply": {
+      "description": "tk.sh retro-apply <board> <mark> <ids…>.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "mark", "ids"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "mark": { "enum": ["approve", "reject", "defer"] },
+        "ids": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[ME][0-9]+$" } }
+      }
+    },
+    "params_sync_box": {
+      "description": "Refused while any ticket on the box is working unless force.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["force"],
+      "properties": { "force": { "type": "boolean" } }
+    },
+    "params_get_diff": {
+      "description": "Without file: the file list with stats and diff_hash; with file: that file's unified diff.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "file": { "type": "string", "minLength": 1 }
+      }
+    },
+    "params_set_review_comments": {
+      "description": "Replaces the ticket's draft review comments in hub-meta.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "comments"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "comments": { "type": "array", "items": { "$ref": "#/$defs/review_comment" } }
+      }
+    },
+    "params_approve_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "diff_hash"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "diff_hash": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "rpc_result": {
+      "description": "Daemon -> hub reply to an rpc, and hub -> UI forward of it (the hub adds devbox, method, board_key, nn). `data` carries structured results (get_diff, verify_landed, sweep_board, pane_tail…); `reason` a human explanation of a refusal.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "ok", "exit_code", "output_tail"],
+      "properties": {
+        "type": { "const": "rpc_result" },
+        "id": { "$ref": "#/$defs/rpc_id" },
+        "ok": { "type": "boolean" },
+        "exit_code": { "description": "null when the command never ran (refused, timed out).", "type": ["integer", "null"] },
+        "output_tail": { "type": "string" },
+        "reason": { "type": "string" },
+        "data": { "type": "object" },
+        "devbox": { "$ref": "#/$defs/name" },
+        "method": { "$ref": "#/$defs/rpc_method" },
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" }
+      }
+    },
+
+    "board_synced": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "board"],
+      "properties": {
+        "type": { "const": "board_synced" },
+        "board": { "$ref": "#/$defs/board" }
+      }
+    },
+    "board_removed": {
+      "description": "The board vanished from its box (absent from a full snapshot or listed in `removed`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "board_key"],
+      "properties": {
+        "type": { "const": "board_removed" },
+        "board_key": { "$ref": "#/$defs/board_key" }
+      }
+    },
+    "ticket_moved": {
+      "description": "Derived by the hub by diffing `col` between snapshots; also stored in the activity log.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "board_key", "nn", "from", "to", "at"],
+      "properties": {
+        "type": { "const": "ticket_moved" },
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "from": { "$ref": "#/$defs/column" },
+        "to": { "$ref": "#/$defs/column" },
+        "at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "synthesis_event": {
+      "description": "synthesis_started / synthesis_finished. nn null: the board brief.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "board_key", "nn", "backend", "at"],
+      "properties": {
+        "type": { "enum": ["synthesis_started", "synthesis_finished"] },
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nn" }] },
+        "backend": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/synthesis_backend" }] },
+        "at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "synthesis_failed": {
+      "description": "Every backend failed; the last good hub-meta is kept.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "board_key", "nn", "backend", "at", "error"],
+      "properties": {
+        "type": { "const": "synthesis_failed" },
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nn" }] },
+        "backend": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/synthesis_backend" }] },
+        "at": { "$ref": "#/$defs/timestamp" },
+        "error": { "type": "string" }
+      }
+    },
+    "devbox_status": {
+      "description": "A box connected, disconnected (its boards go stale), was refused, or sent new health.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "devbox", "online", "last_seen", "health"],
+      "properties": {
+        "type": { "const": "devbox_status" },
+        "devbox": { "$ref": "#/$defs/name" },
+        "online": { "type": "boolean" },
+        "last_seen": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
+        "health": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/health" }] },
+        "protocol_version": { "$ref": "#/$defs/protocol_version" },
+        "refused_reason": { "description": "Set when the hub refused the daemon (e.g. major protocol_version mismatch), shown in the UI.", "type": "string" }
+      }
+    }
+  }
+}

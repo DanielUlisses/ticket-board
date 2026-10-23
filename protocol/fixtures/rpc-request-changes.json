@@ -1,0 +1,9 @@
+{
+  "type": "rpc",
+  "id": "r-0009",
+  "method": "request_changes",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27"
+  }
+}

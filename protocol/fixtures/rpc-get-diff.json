@@ -1,0 +1,10 @@
+{
+  "type": "rpc",
+  "id": "r-0022",
+  "method": "get_diff",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "file": "hub-web/src/Settings.tsx"
+  }
+}

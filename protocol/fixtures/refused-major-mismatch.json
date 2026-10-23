@@ -1,0 +1,5 @@
+{
+  "type": "refused",
+  "protocol_version": "1.0",
+  "reason": "protocol_version 2.0 is not compatible with hub 1.0 (major differs)"
+}

@@ -1,0 +1,22 @@
+[project]
+name = "hub-server"
+version = "0.1.0"
+description = "tk-hub server: receives board snapshots from devbox daemons, serves the web UI"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "jsonschema>=4.23",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
