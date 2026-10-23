@@ -232,6 +232,20 @@ def test_usage_expired_window_is_zero_and_old_data_is_stale_while_agents_run(box
     }
 
 
+def test_old_data_is_stale_while_agents_run_even_when_no_window_has_expired(box):
+    box.board("alpha", "b", [row("01", "working")])
+    box.write(".local/state/tk-daemon/usage.json", {
+        "five_hour": {"used_percentage": 40, "resets_at": "2099-01-01T00:00:00Z"},
+        "seven_day": {"used_percentage": 50, "resets_at": "2099-01-02T00:00:00Z"},
+        "updated_at": "2020-01-01T00:00:00Z"})  # fmt: skip
+
+    usage = snapshot(box)["health"]["usage"]
+
+    assert usage["state"] == "stale"
+    assert usage["five_hour"]["used_percentage"] == 40
+    assert usage["seven_day"]["used_percentage"] == 50
+
+
 def test_board_hash_is_stable_and_changes_with_content(box):
     d = box.board("alpha", "b", [row("01")])
     first = snapshot(box)["boards"][0]["hash"]

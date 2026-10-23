@@ -23,3 +23,5 @@ testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py312"
+# The two extensionless scripts are Python too.
+extend-include = ["tk-statusline", "tk-statusline-install"]

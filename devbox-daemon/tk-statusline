@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Claude Code `statusLine` command for tk-hub.
+
+Reads the statusline JSON on stdin, records `rate_limits` (five_hour / seven_day:
+used_percentage, resets_at) with a timestamp in ~/.local/state/tk-daemon/usage.json
+(atomically: temp file + rename), then prints the line of the statusline command the
+installer saved in ~/.config/tk-daemon/statusline-prev (same stdin), or a minimal
+line. It never fails and never prints nothing: Claude Code shows whatever it says.
+"""
+
+import contextlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HOME = Path(os.environ.get("HOME") or Path.home())
+USAGE = HOME / ".local/state/tk-daemon/usage.json"
+PREV = HOME / ".config/tk-daemon/statusline-prev"
+CHAINED = "TK_STATUSLINE_CHAINED"  # set for the wrapped command: stops a loop
+TIMEOUT = 5  # seconds the wrapped command gets
+WINDOWS = ("five_hour", "seven_day")
+
+
+def rate_limits(raw: str) -> dict:
+    """The usable windows of the statusline JSON, or {}."""
+    try:
+        limits = json.loads(raw).get("rate_limits")
+    except (ValueError, AttributeError):
+        return {}
+    if not isinstance(limits, dict):
+        return {}
+    return {
+        k: limits[k]
+        for k in WINDOWS
+        if isinstance(limits.get(k), dict)
+        and isinstance(limits[k].get("used_percentage"), (int, float))
+    }
+
+
+def record(limits: dict) -> None:
+    USAGE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=USAGE.parent, prefix=".usage-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"rate_limits": limits, "updated_at": int(time.time())}, f)
+        os.replace(tmp, USAGE)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def minimal(limits: dict) -> str:
+    parts = [
+        f"{label} {limits[k]['used_percentage']:.0f}%"
+        for k, label in (("five_hour", "5h"), ("seven_day", "wk"))
+        if k in limits
+    ]
+    return " · ".join(parts) or "claude"
+
+
+def previous(raw: bytes) -> str:
+    """The wrapped command's line, or ''. Its stdout counts even on a non-zero exit."""
+    if os.environ.get(CHAINED):  # statusline-prev leads back here: do not recurse
+        return ""
+    try:
+        cmd = PREV.read_text().strip()
+        if not cmd:
+            return ""
+        proc = subprocess.Popen(
+            ["sh", "-c", cmd],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, CHAINED: "1"},
+            start_new_session=True,
+        )
+        try:
+            out, _ = proc.communicate(raw, timeout=TIMEOUT)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)  # the whole group, not just sh
+            proc.communicate()
+            return ""
+        return out.decode("utf-8", errors="replace").rstrip("\n")
+    except Exception:  # noqa: BLE001 — the statusline must never fail
+        return ""
+
+
+def main() -> None:
+    try:
+        raw = sys.stdin.buffer.read()
+    except Exception:  # noqa: BLE001 — the statusline must never fail
+        raw = b""
+    limits = rate_limits(raw.decode("utf-8", errors="replace"))
+    if limits:
+        try:
+            record(limits)
+        except Exception:  # noqa: BLE001, S110 — the statusline must never fail
+            pass
+    print(previous(raw) or minimal(limits))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BaseException:  # noqa: BLE001 — the statusline must never fail
+        print("claude")
+    sys.exit(0)
