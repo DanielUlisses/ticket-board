@@ -6,11 +6,12 @@ import json
 import logging
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hub_server import PROTOCOL_VERSION
@@ -162,6 +163,10 @@ def bearer(ws: WebSocket) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
+class ArchiveRequest(BaseModel):
+    archived: bool
+
+
 class ScanRequest(BaseModel):
     devbox: str | None = None
 
@@ -169,6 +174,23 @@ class ScanRequest(BaseModel):
 class ActionRequest(BaseModel):
     method: str
     params: dict
+
+
+class PolicyValues(BaseModel):
+    """The board-override keys the UI may write; box-level keys (max_parallel,
+    usage_gate_pct, synthesis) are not among them. An explicit null removes the board
+    override of that key (it inherits again)."""
+
+    model_config = ConfigDict(extra="forbid")
+    forge: Literal["github", "azure", "none"] | None = None
+    require_human_before_pr: bool | None = None
+    auto_merge: bool | None = None
+    night_shift: bool | None = None
+    autonomy: Literal["assist", "auto"] | None = None
+
+
+class PolicyRequest(BaseModel):
+    values: PolicyValues
 
 
 def create_app(
@@ -333,6 +355,29 @@ def create_app(
             "body": found.get("body"),
         }
 
+    @app.post("/api/boards/{board_key:path}/policy", status_code=202)
+    async def set_policy(board_key: str, request: PolicyRequest):
+        """set_policy on the board's devbox: tk.sh policy-set writes the board
+        override, the board's next snapshot carries the result."""
+        board = hub.store.boards.get(board_key)
+        if not board:
+            raise HTTPException(404, f"no board {board_key}")
+        values = request.values.model_dump(exclude_unset=True)
+        if not values:
+            raise HTTPException(422, "no policy values to set")
+        try:
+            rpc_id = await hub.send_rpc(
+                board["devbox"],
+                "set_policy",
+                {"board_key": board_key, "values": values},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(
+                404, f"devbox {board['devbox']} is not connected"
+            ) from None
+        return {"rpc": {"id": rpc_id, "devbox": board["devbox"]}}
+
     @app.post("/api/scan", status_code=202)
     async def scan(request: ScanRequest | None = None):
         """rescan_boards on one devbox, or on every connected one; results
@@ -392,6 +437,25 @@ def create_app(
             except BadAction as e:  # a suggestion the schema refuses
                 skipped.append({"nn": nn, "reason": str(e)})
         return {"rpcs": rpcs, "skipped": skipped}
+
+    @app.post("/api/boards/{board_key:path}/archive", status_code=202)
+    async def archive(board_key: str, request: ArchiveRequest):
+        """set_archived on the board's devbox (box online only); the daemon
+        re-exports, so the flag reaches the hub in the next snapshot."""
+        board = hub.store.boards.get(board_key)
+        if board is None:
+            raise HTTPException(404, f"no board {board_key}")
+        devbox = board["devbox"]
+        try:
+            rpc_id = await hub.send_rpc(
+                devbox,
+                "set_archived",
+                {"board_key": board_key, "archived": request.archived},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
 
     # Last, so /api and /ws routes win over the catch-all mount.
     if web_dist is not None and Path(web_dist).is_dir():

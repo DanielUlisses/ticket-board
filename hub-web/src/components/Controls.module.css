@@ -73,3 +73,18 @@
 }
 .dot[data-dot="urgent"] { background: var(--icon-urgent); }
 .dot[data-dot="working"] { background: var(--icon-working); }
+
+.boardCell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.archived {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.archived label {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0;
+}

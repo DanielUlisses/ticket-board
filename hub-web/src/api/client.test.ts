@@ -32,7 +32,12 @@ class FakeSocket implements SocketLike {
 }
 
 const json = (body: unknown, status = 200) =>
-  Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
+  Promise.resolve(
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    }),
+  );
 
 function setup() {
   const store = createStore();
@@ -57,9 +62,14 @@ describe("hub client", () => {
   it("loads /api/boards into the store and opens /ws/ui on the same host", async () => {
     const { store, fetch, client } = setup();
     await client.start();
-    expect(fetch).toHaveBeenCalledWith("https://tk-hub.example.ts.net/api/boards", expect.anything());
+    expect(fetch).toHaveBeenCalledWith(
+      "https://tk-hub.example.ts.net/api/boards",
+      expect.anything(),
+    );
     expect(store.view().counts.all).toBe(14);
-    expect(FakeSocket.all.map((s) => s.url)).toEqual(["wss://tk-hub.example.ts.net/ws/ui"]);
+    expect(FakeSocket.all.map((s) => s.url)).toEqual([
+      "wss://tk-hub.example.ts.net/ws/ui",
+    ]);
   });
 
   it("feeds every socket message to the store", async () => {
@@ -97,7 +107,10 @@ describe("hub client", () => {
     fetch.mockClear();
     FakeSocket.all[2].open(); // events may have been missed while down
     await vi.advanceTimersByTimeAsync(0);
-    expect(fetch).toHaveBeenCalledWith("https://tk-hub.example.ts.net/api/boards", expect.anything());
+    expect(fetch).toHaveBeenCalledWith(
+      "https://tk-hub.example.ts.net/api/boards",
+      expect.anything(),
+    );
 
     FakeSocket.all[2].drop(); // a successful open resets the backoff
     await vi.advanceTimersByTimeAsync(1000);
@@ -121,12 +134,18 @@ describe("hub client", () => {
     client.stop();
     await client.start();
     FakeSocket.all[1].open();
-    FakeSocket.all[0].send({ type: "board_removed", board_key: "dev-daniel/ticket-board/tk-hub" }); // the old socket is deaf
+    FakeSocket.all[0].send({
+      type: "board_removed",
+      board_key: "dev-daniel/ticket-board/tk-hub",
+    }); // the old socket is deaf
     FakeSocket.all[0].drop(); // and never reconnects
     await vi.advanceTimersByTimeAsync(60_000);
     expect(FakeSocket.all).toHaveLength(2);
     expect(store.view().counts.all).toBe(14);
-    FakeSocket.all[1].send({ type: "board_removed", board_key: "dev-daniel/devboxes/tk-hub" });
+    FakeSocket.all[1].send({
+      type: "board_removed",
+      board_key: "dev-daniel/devboxes/tk-hub",
+    });
     expect(store.view().counts.all).toBe(11);
   });
 
@@ -135,7 +154,9 @@ describe("hub client", () => {
     await client.scan("dev-daniel");
     await client.scan(null);
     const posts = fetch.mock.calls.filter(([url]) => url.endsWith("/api/scan"));
-    expect(posts.map(([, init]) => [init?.method, JSON.parse(String(init?.body))])).toEqual([
+    expect(
+      posts.map(([, init]) => [init?.method, JSON.parse(String(init?.body))]),
+    ).toEqual([
       ["POST", { devbox: "dev-daniel" }],
       ["POST", { devbox: null }],
     ]);
@@ -147,7 +168,9 @@ describe("hub client", () => {
 
   it("scan toasts the hub's error when the post fails", async () => {
     const { store, fetch, client } = setup();
-    fetch.mockImplementationOnce(() => json({ detail: "dev-acme is offline" }, 409));
+    fetch.mockImplementationOnce(() =>
+      json({ detail: "dev-acme is offline" }, 409),
+    );
     await client.scan("dev-acme");
     expect(store.view().toasts.map((t) => [t.kind, t.text])).toEqual([
       ["error", "↻ Scan failed: dev-acme is offline"],
@@ -156,22 +179,64 @@ describe("hub client", () => {
 
   it("scan toasts a network failure", async () => {
     const { store, fetch, client } = setup();
-    fetch.mockImplementationOnce(() => Promise.reject(new TypeError("Failed to fetch")));
+    fetch.mockImplementationOnce(() =>
+      Promise.reject(new TypeError("Failed to fetch")),
+    );
     await client.scan(null);
-    expect(store.view().toasts[0]).toMatchObject({ kind: "error", text: "↻ Scan failed: Failed to fetch" });
+    expect(store.view().toasts[0]).toMatchObject({
+      kind: "error",
+      text: "↻ Scan failed: Failed to fetch",
+    });
   });
 });
 
 describe("ticket detail endpoints", () => {
   it("GETs report and activity with each board_key segment encoded", async () => {
-    const fetch = vi.fn(async () => new Response(JSON.stringify([]), { status: 200 }));
-    const client = createHubClient(createStore(), { origin: "https://hub", fetch: fetch as unknown as typeof globalThis.fetch });
+    const fetch = vi.fn(
+      async () => new Response(JSON.stringify([]), { status: 200 }),
+    );
+    const client = createHubClient(createStore(), {
+      origin: "https://hub",
+      fetch: fetch as unknown as typeof globalThis.fetch,
+    });
     await client.activity("dev one/repo/board", "01");
     await client.report("dev-daniel/repo/board", "01");
     expect(fetch.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual([
       "https://hub/api/boards/dev%20one/repo/board/tickets/01/activity",
       "https://hub/api/boards/dev-daniel/repo/board/tickets/01/report",
     ]);
+  });
+
+  it("returns the events of the hub's activity response", async () => {
+    const events = [{ from: "backlog", to: "working", at: "2026-10-23T14:02:00Z" }];
+    const body = { board_key: "dev-daniel/repo/board", nn: "01", events };
+    const fetch = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    const client = createHubClient(createStore(), { origin: "https://hub", fetch: fetch as unknown as typeof globalThis.fetch });
+    expect(await client.activity("dev-daniel/repo/board", "01")).toEqual(events);
+  });
+});
+
+describe("setArchived", () => {
+  it("POSTs {archived} to the encoded per-segment key route and toasts ok", async () => {
+    const { store, fetch, client } = setup();
+    await client.setArchived("dev box/my repo/slug#1", true);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe(
+      "https://tk-hub.example.ts.net/api/boards/dev%20box/my%20repo/slug%231/archive",
+    );
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({ archived: true });
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "ok" });
+  });
+
+  it("toasts the error on 409", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ detail: "devbox offline" }, 409));
+    await client.setArchived("a/b/c", false);
+    expect(store.view().toasts.at(-1)).toMatchObject({
+      kind: "error",
+      text: expect.stringContaining("devbox offline"),
+    });
   });
 });
 

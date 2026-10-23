@@ -1,4 +1,4 @@
-import type { Devbox } from "../protocol/types";
+import type { Devbox, Usage } from "../protocol/types";
 import { formatSeen } from "../columns";
 import styles from "./DevboxPill.module.css";
 
@@ -20,14 +20,39 @@ export function healthOf(box: Devbox | undefined): { state: HealthState; label: 
   };
 }
 
+/** The usage meter's text and hover: `5h 42% · wk 72%`, reset times on hover. Unknown and stale are marked. */
+export function usageMeter(usage: Usage | undefined): { state: Usage["state"]; text: string; detail: string } {
+  const windows = [
+    ["5h", usage?.five_hour],
+    ["wk", usage?.seven_day],
+  ] as const;
+  const shown = windows.filter(([, w]) => w);
+  if (!usage || usage.state === "unknown" || shown.length === 0)
+    return { state: "unknown", text: "usage unknown", detail: "No Claude usage reported by this box yet." };
+  const text = shown.map(([k, w]) => `${k} ${Math.round(w!.used_percentage)}%`).join(" · ");
+  const resets = shown.map(([k, w]) =>
+    Date.parse(w!.resets_at) <= Date.now() ? `${k} reset ${formatSeen(w!.resets_at)}` : `${k} resets ${formatSeen(w!.resets_at)}`,
+  );
+  const updated = usage.updated_at ? [`updated ${formatSeen(usage.updated_at)}`] : [];
+  return usage.state === "stale"
+    ? { state: "stale", text: `${text} (stale)`, detail: [...resets, ...updated, "older than 30 min while agents run"].join(" · ") }
+    : { state: "ok", text, detail: [...resets, ...updated].join(" · ") };
+}
+
 /** The devbox sub-pill (or, `plain`, the swimlane's mono line): name and health. */
 export function DevboxPill({ name, box, plain = false }: { name: string; box: Devbox | undefined; plain?: boolean }) {
   const health = healthOf(box);
+  const meter = box?.online && box.health && !box.refused_reason ? usageMeter(box.health.usage) : null;
   return (
     <span className={plain ? styles.plain : styles.pill} data-health={health.state} title={health.detail}>
       <span className={styles.dot} aria-hidden="true" />
       <span>{name}</span>
       <span className={styles.label}>{health.label}</span>
+      {meter && (
+        <span className={styles.meter} data-usage={meter.state} title={meter.detail}>
+          {meter.text}
+        </span>
+      )}
     </span>
   );
 }

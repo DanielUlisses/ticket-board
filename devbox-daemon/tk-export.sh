@@ -126,6 +126,9 @@ policy_verb() {  # <root>
 # the export detected it).
 board_policy() {  # <root> <board_path> <export_file>
   local root="$1" path="$2" exp="$3" verb=0
+  read_obj "$BOX_POLICY" >"$TMP/l-box"
+  read_obj "$root/.scratch/policy.json" >"$TMP/l-repo"
+  read_obj "$path/policy.json" >"$TMP/l-board"
   policy_verb "$root" || verb=$?
   (( verb != 2 )) || return 1
   if (( verb == 0 )); then
@@ -134,9 +137,6 @@ board_policy() {  # <root> <board_path> <export_file>
     one_obj <"$TMP/policy-out" || { log "tk.sh policy $path printed no JSON object"; return 1; }
     return
   fi
-  read_obj "$BOX_POLICY" >"$TMP/l-box"
-  read_obj "$root/.scratch/policy.json" >"$TMP/l-repo"
-  read_obj "$path/policy.json" >"$TMP/l-board"
   jq -c --slurpfile box "$TMP/l-box" --slurpfile repo "$TMP/l-repo" --slurpfile board "$TMP/l-board" '
     {forge: .forge, require_human_before_pr: true, auto_merge: false, night_shift: false,
      autonomy: "auto", max_parallel: 5, usage_gate_pct: 90,
@@ -149,15 +149,28 @@ export_board() {  # <root> <board_path> -> one board object on stdout
   (cd "$root" && call "$TK_SH" export "$path") >"$exp" || return 1
   jq -e 'type == "object"' "$exp" >/dev/null 2>&1 || { log "tk.sh export $path printed no JSON object"; return 1; }
   board_policy "$root" "$path" "$exp" >"$TMP/policy.json" || return 1
+  # Which layer each key came from (the layer files board_policy just read).
+  jq -c --arg env "${TICKET_FORGE:-}" --argjson remote "$(jq '.has_remote == true' "$exp")" \
+        --slurpfile box "$TMP/l-box" --slurpfile repo "$TMP/l-repo" \
+        --slurpfile board "$TMP/l-board" '
+    . as $p | keys | map(. as $k | {($k):
+      (if $k == "forge" and ($remote | not) then "no-remote"
+       elif $k == "forge" and $env != "" then "env"
+       elif ($board[0] | has($k)) then "board"
+       elif ($repo[0] | has($k)) then "repo"
+       elif ($box[0] | has($k)) then "box"
+       elif $k == "forge" then "detected"
+       else "default" end)}) | add' "$TMP/policy.json" >"$TMP/policy-sources.json" || return 1
   read_obj_strict "$path/hub-meta.json" >"$TMP/meta.json" || return 1
   read_text "$root/docs/agents/project-memory.md" >"$TMP/memory.json"
   b="$(jq -cS --arg devbox "$DEVBOX" --slurpfile policy "$TMP/policy.json" \
+        --slurpfile psrc "$TMP/policy-sources.json" \
         --slurpfile meta "$TMP/meta.json" --slurpfile memory "$TMP/memory.json" '
     ($meta[0].tickets // {}) as $mt
     | . + {key: "\($devbox)/\(.repo)/\(.slug)", devbox: $devbox,
            project_memory: $memory[0],
            hub_meta: ({archived: false, board_brief: null} + ($meta[0] | del(.tickets))),
-           policy: $policy[0],
+           policy: $policy[0], policy_sources: $psrc[0],
            tickets: [.tickets[] | {summary: null, reviewer_notes: null, full_report_md: null,
                                    manual_tasks: [], synthesis_backend: null, synthesis_status: "none"}
                                   + . + ($mt[.nn] // {})]}' "$exp")" || return 1

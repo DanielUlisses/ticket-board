@@ -98,6 +98,15 @@ DEFAULTS = {
     "reservation_ttl_s": 120,
     "shutdown_grace_s": 60,
 }
+# The board-override keys set_policy may write, mirroring tk.sh's POLICY_CHECK; box-level
+# keys (max_parallel, usage_gate_pct, synthesis) are not among them.
+POLICY_WRITABLE = {
+    "autonomy": lambda v: v in ("assist", "auto"),
+    "forge": lambda v: v in ("github", "azure", "none"),
+    "require_human_before_pr": lambda v: isinstance(v, bool),
+    "auto_merge": lambda v: isinstance(v, bool),
+    "night_shift": lambda v: isinstance(v, bool),
+}
 SYNTHESIS_RPCS = frozenset({"refine_with_comment", "refresh_board_brief", "run_retro"})
 FAILED = re.compile(r"^tk-export: failed (\S+)(?: (/.*))?$", re.MULTILINE)
 RESUME = re.compile(r"^tk-export: resume ([0-9]+)$", re.MULTILINE)
@@ -343,6 +352,8 @@ class Daemon:
             "launch_ticket": self.rpc_launch_ticket,
             "say_agent": self.rpc_say_agent,
             "pane_tail": self.rpc_pane_tail,
+            "set_archived": self.rpc_set_archived,
+            "set_policy": self.rpc_set_policy,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -699,6 +710,57 @@ class Daemon:
         if rc in AGENT_EXITS:
             result["reason"] = AGENT_EXITS[rc]
         return result
+
+    async def rpc_set_archived(self, ws, params: dict) -> dict:
+        key, flag = params.get("board_key"), params.get("archived")
+        if not isinstance(flag, bool):
+            raise ValueError(f"bad set_archived params: {params!r}")  # noqa: TRY004
+        b = self.sent.get(key)
+        if b is None:
+            raise ValueError(f"no board {key} on this box")
+        board = Path(b["board_path"])
+        meta_file = board / "hub-meta.json"
+        # Read-modify-write: safe only while this is the daemon's single writer
+        # (no awaits in between); a per-board lock is needed once another exists.
+        meta = json.loads(meta_file.read_text()) if meta_file.exists() else {}
+        if not isinstance(meta, dict):
+            raise ValueError(f"{meta_file} is not a JSON object")  # noqa: TRY004
+        meta["archived"] = flag
+        tmp = meta_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta, indent=2) + "\n")
+        tmp.replace(meta_file)
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"{key} archived={str(flag).lower()}",
+        }
+
+    async def rpc_set_policy(self, ws, params: dict) -> dict:
+        """`tk.sh policy-set <board> key=value…` in the repo's main checkout; the
+        re-export after every RPC then carries the new resolved policy."""
+        board = self.sent.get(params.get("board_key"))
+        values = params.get("values")
+        if board is None or not isinstance(values, dict) or not values:
+            raise ValueError(f"no board {params.get('board_key')!r} on this box")
+        for k, v in values.items():
+            allowed = POLICY_WRITABLE.get(k)
+            if allowed is None or not (v is None or allowed(v)):
+                raise ValueError(
+                    f"policy {k}={v!r} is not a writable board-override value"
+                )
+        tk = os.environ.get("TK_SH") or (
+            "tk.sh"
+            if shutil.which("tk.sh")
+            else str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
+        )
+        # Each value as JSON, so tk.sh reads back the type it was sent (quoting keeps a
+        # string a string even when it looks like JSON); None is `key=`, which removes
+        # the board override.
+        args = [f"{k}={'' if v is None else json.dumps(v)}" for k, v in values.items()]
+        code, out, err = await run_cmd(
+            [tk, "policy-set", board["board_path"], *args], cwd=board["root"]
+        )
+        return {"ok": code == 0, "exit_code": code, "output_tail": out + err}
 
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")

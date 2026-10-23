@@ -7,7 +7,8 @@ export, one holding `export-stubborn` (seconds) is as slow and ignores SIGTERM.
 `<repo>/.scratch/boards-out` replaces what `boards` prints. $FAKE_TK_HELP_FAILS
 makes `help` fail; $FAKE_TK_HELP_PROSE adds prose naming policy files to it.
 The `policy` verb exists (and `help` lists it) only when $FAKE_TK_POLICY is set:
-then `resolved-policy.json` answers it and `policy-fails` makes it fail. Without
+then `resolved-policy.json` answers it and `policy-fails` makes it fail; `policy-set` then
+writes `policy.json` (and the canned answer), `policy-set-fails` makes it fail. Without
 it, `policy` fails like a tk.sh without that verb (usage on stdout, exit 1).
 `launch <board> <NN> --type --model --effort` moves the row to `working` and
 exits 0, or exits with `<board>/launch-exit` (the row left alone); it holds for
@@ -82,7 +83,7 @@ elif verb == "export":
                 "repo": cwd.name,
                 "root": str(cwd),
                 "base": "main",
-                "has_remote": False,
+                "has_remote": not (board / "no-remote").exists(),
                 "forge": "none",
                 "board_path": str(board),
                 "board_md": md.read_text() if md.exists() else None,
@@ -124,6 +125,27 @@ elif verb == "policy" and has_policy:
     if (board / "policy-fails").exists():
         sys.exit("ERROR: policy.json: parse error at line 3")
     print((board / "resolved-policy.json").read_text())
+elif verb == "policy-set" and has_policy:
+    # key=value... (value JSON when it parses) into <board>/policy.json; the
+    # canned resolved-policy.json follows, standing in for the layer merge.
+    board = Path(args[1])
+    if (board / "policy-set-fails").exists():
+        sys.exit("ERROR: not written - max_parallel is 0")
+    for name in ("policy.json", "resolved-policy.json"):
+        f = board / name
+        if name == "resolved-policy.json" and not f.exists():
+            continue
+        obj = json.loads(f.read_text()) if f.exists() else {}
+        for arg in args[2:]:
+            key, _, val = arg.partition("=")
+            try:
+                obj[key] = json.loads(val)
+            except ValueError:
+                obj[key] = val
+            if val == "":  # `key=` removes the key, as in the real tk.sh
+                obj.pop(key, None)
+        f.write_text(json.dumps(obj))
+    print(f"WROTE {board / 'policy.json'}")
 else:
     print("Usage: tk.sh ...")
     sys.exit(1)

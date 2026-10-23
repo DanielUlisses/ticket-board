@@ -43,6 +43,8 @@ export interface View {
   devboxes: Devbox[];
   /** Every non-archived board, unfiltered: the Devbox and Board select options. */
   allBoards: Board[];
+  /** Archived boards, unfiltered: the Board select's "Archived (n)" list. */
+  archivedBoards: Board[];
   /** `ticketId`s of tickets that just moved (Live Board plays `pulseMove`). */
   justMoved: ReadonlySet<string>;
   toasts: Toast[];
@@ -284,6 +286,7 @@ export function createStore() {
       counts: Object.fromEntries(STAGES.map((st) => [st, count(boards, st)])) as Counts,
       devboxes: state.devboxes,
       allBoards: visible(),
+      archivedBoards: state.boards.filter((b) => b.hub_meta.archived),
       justMoved: state.justMoved,
       toasts: state.toasts,
       sheet: openedSheet(),

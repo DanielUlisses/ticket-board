@@ -1,10 +1,11 @@
 import { BoardBar, type OnFrontier } from "./BoardBar";
 import { Card } from "./Card";
 import styles from "./CardGrid.module.css";
+import type { PolicyApi } from "./PolicyPopover";
 import { useView } from "./StoreContext";
 
 /** The Cards page: one section per board, a grid of its tickets' cards. */
-export function CardGrid({ onFrontier }: { onFrontier?: OnFrontier } = {}) {
+export function CardGrid({ client, onFrontier }: { client?: PolicyApi; onFrontier?: OnFrontier } = {}) {
   const { boards, devboxes } = useView();
   if (boards.length === 0) return <p className={styles.empty}>No tickets match these filters.</p>;
   return (
@@ -19,6 +20,7 @@ export function CardGrid({ onFrontier }: { onFrontier?: OnFrontier } = {}) {
           <BoardBar
             board={board}
             box={devboxes.find((d) => d.devbox === board.devbox)}
+            api={client}
             onFrontier={onFrontier}
           />
           <div className={styles.grid}>

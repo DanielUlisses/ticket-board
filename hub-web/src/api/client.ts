@@ -14,6 +14,7 @@ import type {
   ActivityEvent,
   ActivityResponse,
   BoardsResponse,
+  PolicyEdit,
   ReportResponse,
   SentRpc,
   TicketType,
@@ -193,6 +194,21 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         socket = null;
       }
     },
+    /** Writes the board's policy override (tk.sh policy-set); the new resolved policy arrives with its next snapshot. */
+    async setPolicy(boardKey: string, values: PolicyEdit): Promise<boolean> {
+      try {
+        const res = await doFetch(`${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/policy`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ values }),
+        });
+        if (res.ok) return true;
+        store.toast({ kind: "error", text: `Policy not saved: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `Policy not saved: ${(err as Error).message}` });
+      }
+      return false;
+    },
     /** ↻ Scan: a forced full rescan of one devbox, or every box when null. */
     async scan(devbox: string | null) {
       const scope = devbox ?? "all devboxes";
@@ -206,6 +222,21 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         else store.toast({ kind: "error", text: `↻ Scan failed: ${await errorText(res)}` });
       } catch (err) {
         store.toast({ kind: "error", text: `↻ Scan failed: ${(err as Error).message}` });
+      }
+    },
+    /** Archive or restore a board: the hub asks its box's daemon (box online only). */
+    async setArchived(boardKey: string, archived: boolean) {
+      const verb = archived ? "Archive" : "Restore";
+      try {
+        const res = await doFetch(`${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/archive`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ archived }),
+        });
+        if (res.ok) store.toast({ kind: "ok", text: `${verb} sent for ${boardKey}` });
+        else store.toast({ kind: "error", text: `${verb} failed: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `${verb} failed: ${(err as Error).message}` });
       }
     },
   };

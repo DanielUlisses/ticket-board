@@ -68,6 +68,24 @@ export interface Ticket {
   synthesis_status: SynthesisStatus;
 }
 
+/** `$defs/policy` (subset): `tk.sh policy <board>`, resolved. */
+export interface Policy {
+  forge: "github" | "azure" | "none";
+  require_human_before_pr: boolean;
+  auto_merge: boolean;
+  night_shift: boolean;
+  autonomy: "assist" | "auto";
+  max_parallel: number;
+  usage_gate_pct: number;
+}
+
+export type PolicySource = "default" | "box" | "repo" | "board" | "env" | "detected" | "no-remote";
+
+/** The board-override keys the UI may write (`rest_set_policy`); null removes a key's override. */
+export type PolicyEdit = {
+  [K in "forge" | "require_human_before_pr" | "auto_merge" | "night_shift" | "autonomy"]?: Policy[K] | null;
+};
+
 /** `$defs/board` (subset). `stale`/`last_seen` are added by the hub. */
 export interface Board {
   key: string;
@@ -77,6 +95,9 @@ export interface Board {
   repo: string;
   forge: "github" | "azure" | "none";
   project_memory: string | null;
+  policy: Policy;
+  /** Which layer each policy key came from; keys it omits are defaults. */
+  policy_sources?: Partial<Record<keyof Policy, PolicySource>>;
   hub_meta: { archived: boolean };
   hash: string;
   exported_at: Timestamp;
@@ -85,10 +106,25 @@ export interface Board {
   last_seen?: Timestamp | null;
 }
 
+/** `$defs/usage_window`. */
+export interface UsageWindow {
+  used_percentage: number;
+  resets_at: Timestamp;
+}
+
+/** `$defs/usage`: unknown has null windows; stale is older than 30 min while agents run. */
+export interface Usage {
+  state: "ok" | "unknown" | "stale";
+  five_hour: UsageWindow | null;
+  seven_day: UsageWindow | null;
+  updated_at: Timestamp | null;
+}
+
 /** `$defs/health` (subset). */
 export interface Health {
   daemon_version: string;
   herdr: { ok: boolean; status: string };
+  usage?: Usage;
   running: number;
 }
 
@@ -166,21 +202,18 @@ export interface ReportResponse {
   body: string | null;
 }
 
-/** One of the ticket's column moves (`$defs/ticket_moved`): what the timeline reads. */
+/** One `ticket_moved` row of the activity endpoint (the hub's log). */
 export interface ActivityEvent {
   from: Column;
   to: Column;
   at: Timestamp;
 }
 
-/**
- * `GET /api/boards/{board_key}/tickets/{nn}/activity` (`$defs/rest_activity`):
- * the hub's `ticket_moved` log for the ticket, oldest first.
- */
+/** `GET /api/boards/{board_key}/tickets/{nn}/activity` (`$defs/rest_activity`), oldest first. */
 export interface ActivityResponse {
   board_key: string;
   nn: string;
-  events: TicketMoved[];
+  events: ActivityEvent[];
 }
 
 /** `$defs/params_launch_ticket` `type`: tk.sh launch --type. */

@@ -149,7 +149,7 @@
     "policy_sources": {
       "description": "Which layer each resolved policy key came from, for the policy popover (ticket 13).",
       "type": "object",
-      "additionalProperties": { "enum": ["default", "box", "repo", "board", "env", "detected"] }
+      "additionalProperties": { "enum": ["default", "box", "repo", "board", "env", "detected", "no-remote"] }
     },
 
     "board_brief": {
@@ -514,14 +514,16 @@
       "properties": {
         "board_key": { "$ref": "#/$defs/board_key" },
         "values": {
+          "description": "Board-override keys to write; null removes the board override (the key inherits again).",
           "type": "object",
           "minProperties": 1,
+          "additionalProperties": false,
           "properties": {
-            "forge": { "enum": ["github", "azure", "none"] },
-            "require_human_before_pr": { "type": "boolean" },
-            "auto_merge": { "type": "boolean" },
-            "night_shift": { "type": "boolean" },
-            "autonomy": { "enum": ["assist", "auto"] }
+            "forge": { "enum": ["github", "azure", "none", null] },
+            "require_human_before_pr": { "type": ["boolean", "null"] },
+            "auto_merge": { "type": ["boolean", "null"] },
+            "night_shift": { "type": ["boolean", "null"] },
+            "autonomy": { "enum": ["assist", "auto", null] }
           }
         }
       }
@@ -819,6 +821,27 @@
               "nn": { "$ref": "#/$defs/nn" },
               "reason": { "type": "string", "minLength": 1 }
             }
+          }
+        }
+      }
+    },
+    "rest_archive": {
+      "description": "REST: POST /api/boards/{key}/archive, body {archived: boolean} -> 202, one set_archived rpc to the board's devbox; its rpc_result arrives on /ws/ui. 404 unknown board, 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
+    "rest_set_policy": {
+      "description": "REST: POST /api/boards/{key}/policy (body {values}: the board-override keys to change, as in params_set_policy) -> 202. One set_policy rpc to the board's devbox; its rpc_result arrives on /ws/ui, the new resolved policy in the board's next snapshot.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rpc"],
+      "properties": {
+        "rpc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "devbox"],
+          "properties": {
+            "id": { "$ref": "#/$defs/rpc_id" },
+            "devbox": { "$ref": "#/$defs/name" }
           }
         }
       }

@@ -19,8 +19,8 @@ function Shell({ client }: { client: HubClient }) {
   return (
     <>
       <Navbar onScan={(devbox) => void client.scan(devbox)} />
-      <Controls />
-      <main className={styles.main}>{page === "cards" ? <CardGrid onFrontier={(key) => client.frontier(key)} /> : <LiveBoard />}</main>
+      <Controls onArchive={(key, archived) => void client.setArchived(key, archived)} />
+      <main className={styles.main}>{page === "cards" ? <CardGrid client={client} onFrontier={(key) => client.frontier(key)} /> : <LiveBoard />}</main>
       <TicketSheet client={client} />
       <Toasts />
     </>
