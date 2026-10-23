@@ -1,0 +1,64 @@
+.md {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.md h1,
+.md h2,
+.md h3 {
+  margin: 14px 0 6px;
+  line-height: 1.25;
+}
+.md h1 {
+  font-size: 18px;
+}
+.md h2 {
+  font-size: 15px;
+}
+.md h3 {
+  font-size: 13.5px;
+}
+.md p {
+  margin: 6px 0;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--surface-subtle);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.codeWrap {
+  position: relative;
+  margin: 8px 0;
+}
+.pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.pre code {
+  background: none;
+  padding: 0;
+}
+.copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.copy:hover {
+  border-color: var(--border-hover);
+}

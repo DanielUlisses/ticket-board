@@ -38,6 +38,8 @@ export interface View {
   /** `ticketId`s of tickets that just moved (Live Board plays `pulseMove`). */
   justMoved: ReadonlySet<string>;
   toasts: Toast[];
+  /** The ticket open in the sheet, read from the live (unfiltered) boards. */
+  sheet: { board: Board; ticket: Ticket } | null;
 }
 
 interface State {
@@ -47,6 +49,7 @@ interface State {
   filter: Filter;
   justMoved: ReadonlySet<string>;
   toasts: Toast[];
+  opened: { boardKey: string; nn: string } | null;
 }
 
 const NO_FILTER: Filter = { devbox: null, board: null, stage: "all" };
@@ -79,6 +82,7 @@ export function createStore() {
     filter: NO_FILTER,
     justMoved: new Set(),
     toasts: [],
+    opened: null,
   };
   let cached: View | null = null;
   let nextToast = 1;
@@ -91,6 +95,10 @@ export function createStore() {
     const picked = state.filter.board;
     if (picked !== null && !state.boards.some((b) => b.key === picked && !b.hub_meta.archived))
       state = { ...state, filter: { ...state.filter, board: null } };
+    // An opened ticket whose board or ticket is gone stays closed, even if it returns.
+    const o = state.opened;
+    if (o && !state.boards.some((b) => b.key === o.boardKey && b.tickets.some((t) => t.nn === o.nn)))
+      state = { ...state, opened: null };
     cached = null;
     listeners.forEach((l) => l());
   }
@@ -174,6 +182,13 @@ export function createStore() {
   const count = (boards: Board[], stage: Stage) =>
     boards.reduce((n, b) => n + b.tickets.filter((t) => inStage(stage, t)).length, 0);
 
+  function openedSheet(): View["sheet"] {
+    if (!state.opened) return null;
+    const board = state.boards.find((b) => b.key === state.opened!.boardKey);
+    const ticket = board?.tickets.find((t) => t.nn === state.opened!.nn);
+    return board && ticket ? { board, ticket } : null;
+  }
+
   function compute(): View {
     const { stage } = state.filter;
     const boards = selected();
@@ -191,6 +206,7 @@ export function createStore() {
       allBoards: visible(),
       justMoved: state.justMoved,
       toasts: state.toasts,
+      sheet: openedSheet(),
     };
   }
 
@@ -206,6 +222,12 @@ export function createStore() {
       set({ page });
     },
     clearMoved,
+    openTicket(boardKey: string, nn: string) {
+      set({ opened: { boardKey, nn } });
+    },
+    closeTicket() {
+      set({ opened: null });
+    },
     toast,
     dismiss(id: number) {
       set({ toasts: state.toasts.filter((t) => t.id !== id) });

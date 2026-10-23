@@ -33,7 +33,7 @@ describe("CardGrid", () => {
 
   it("a card shows the column's glyph in its variant, #NN title, summary, tag pills and checks metric", () => {
     renderGrid();
-    const card = screen.getByRole("article", { name: /^01 / });
+    const card = screen.getByRole("button", { name: /^01 / });
     const glyph = within(card).getByTitle("HUMAN GATE");
     expect(glyph).toHaveTextContent("◉");
     expect(glyph).toHaveAttribute("data-variant", "human");
@@ -48,7 +48,7 @@ describe("CardGrid", () => {
   it("each column has its glyph and variant", () => {
     renderGrid();
     const glyphOf = (nn: string) =>
-      screen.getByRole("article", { name: new RegExp(`^${nn} `) }).querySelector("[data-variant]")!;
+      screen.getByRole("button", { name: new RegExp(`^${nn} `) }).querySelector("[data-variant]")!;
     expect([glyphOf("05"), glyphOf("02"), glyphOf("03"), glyphOf("06"), glyphOf("27"), glyphOf("04")].map(
       (g) => [g.textContent, g.getAttribute("data-variant")],
     )).toEqual([
@@ -63,10 +63,10 @@ describe("CardGrid", () => {
 
   it("an unlaunched ticket shows its suggested model, a PR its CI checks", () => {
     renderGrid();
-    const unlaunched = screen.getByRole("article", { name: /^27 / });
+    const unlaunched = screen.getByRole("button", { name: /^27 / });
     expect(within(unlaunched).getAllByTestId("tag").map((t) => t.textContent)).toEqual(["FRONTIER", "~sonnet/low"]);
     expect(within(unlaunched).getByText("ready to launch")).toBeInTheDocument(); // the note stands in for a missing summary
-    const pr = screen.getByRole("article", { name: /^03 / });
+    const pr = screen.getByRole("button", { name: /^03 / });
     expect(within(pr).getByText(/· ci 1\/2$/)).toBeInTheDocument();
   });
 
@@ -92,7 +92,7 @@ describe("CardGrid", () => {
 
   it("follows the store's filters", () => {
     renderGrid((store) => store.setFilter({ stage: "frontier" }));
-    expect(screen.getAllByRole("article").map((a) => a.getAttribute("aria-label"))).toEqual(["27 Hub settings page"]);
+    expect(screen.getAllByRole("button").filter((e) => e.tagName === "ARTICLE").map((a) => a.getAttribute("aria-label"))).toEqual(["27 Hub settings page"]);
   });
 
   it("says so when nothing matches", () => {

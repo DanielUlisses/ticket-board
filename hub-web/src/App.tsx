@@ -6,6 +6,7 @@ import { Controls } from "./components/Controls";
 import { LiveBoard } from "./components/LiveBoard";
 import { Navbar } from "./components/Navbar";
 import { StoreProvider, useView } from "./components/StoreContext";
+import { TicketSheet } from "./components/TicketSheet";
 import { Toasts } from "./components/Toasts";
 import type { Store } from "./store/store";
 
@@ -20,6 +21,7 @@ function Shell({ client }: { client: HubClient }) {
       <Navbar onScan={(devbox) => void client.scan(devbox)} />
       <Controls />
       <main className={styles.main}>{page === "cards" ? <CardGrid /> : <LiveBoard />}</main>
+      <TicketSheet client={client} />
       <Toasts />
     </>
   );

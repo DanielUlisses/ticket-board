@@ -75,6 +75,16 @@ export function LiveBoard() {
                             className={styles.puck}
                             title={`${t.nn} ${t.title}`}
                             data-moved={justMoved.has(id) ? "true" : "false"}
+                            role="button"
+                            aria-label={`${t.nn} ${t.title}`}
+                            tabIndex={0}
+                            onClick={() => store.openTicket(board.key, t.nn)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                store.openTicket(board.key, t.nn);
+                              }
+                            }}
                             onAnimationEnd={() => store.clearMoved(id)}
                           >
                             <span className={styles.puckTop}>

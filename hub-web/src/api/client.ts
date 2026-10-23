@@ -7,7 +7,7 @@
 //   - POST /api/scan with `{"devbox": "<name>" | null}` (null: every box), any
 //     2xx meaning the rescan was sent; the outcome arrives later as rpc_result;
 //   - errors carry FastAPI's `{"detail": "..."}`.
-import type { BoardsResponse, UiEvent } from "../protocol/types";
+import type { ActivityEvent, BoardsResponse, ReportResponse, UiEvent } from "../protocol/types";
 import type { Store } from "../store/store";
 
 /** The part of the browser WebSocket the client uses. */
@@ -83,7 +83,21 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     return `HTTP ${res.status}`;
   }
 
+  // board_key is `<devbox>/<repo>/<board>`: encode each segment, keep the slashes.
+  const ticketUrl = (boardKey: string, nn: string, leaf: string) =>
+    `${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/tickets/${encodeURIComponent(nn)}/${leaf}`;
+
+  async function getJson<T>(url: string): Promise<T> {
+    const res = await doFetch(url, { headers: { accept: "application/json" } });
+    if (!res.ok) throw new Error(await errorText(res));
+    return (await res.json()) as T;
+  }
+
   return {
+    /** The ticket's full report and raw body (ticket sheet's report modal). */
+    report: (boardKey: string, nn: string) => getJson<ReportResponse>(ticketUrl(boardKey, nn, "report")),
+    /** The ticket's column moves, oldest first. */
+    activity: (boardKey: string, nn: string) => getJson<ActivityEvent[]>(ticketUrl(boardKey, nn, "activity")),
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {
       stopped = false;

@@ -26,6 +26,9 @@
   background-image: radial-gradient(var(--card-dot-color) 1px, transparent 1px);
   background-size: 5px 5px;
 }
+.card {
+  cursor: pointer;
+}
 .card:hover {
   border-color: var(--border-hover);
   box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.06);

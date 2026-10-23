@@ -166,4 +166,15 @@ describe("store", () => {
     store.setFilter({ stage: "done" });
     expect(nns(store)).toEqual([["dev-daniel/ticket-skill/tk-hub", ["04"]]]);
   });
+
+  it("an opened ticket whose board is removed stays closed when the board returns", () => {
+    const store = loaded();
+    const board = store.view().allBoards[0];
+    store.openTicket(board.key, board.tickets[0].nn);
+    expect(store.view().sheet).not.toBeNull();
+    store.apply({ type: "board_removed", board_key: board.key });
+    expect(store.view().sheet).toBeNull();
+    store.apply({ type: "board_synced", board });
+    expect(store.view().sheet).toBeNull();
+  });
 });

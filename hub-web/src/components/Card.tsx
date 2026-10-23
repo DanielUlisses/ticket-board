@@ -3,13 +3,26 @@ import type { Ticket } from "../protocol/types";
 import styles from "./Card.module.css";
 import { checksMetric, modelTag } from "./checks";
 import { Glyph } from "./Glyph";
+import { useStore } from "./StoreContext";
 
-export function Card({ ticket }: { ticket: Ticket }) {
+export function Card({ ticket, boardKey }: { ticket: Ticket; boardKey: string }) {
+  const store = useStore();
+  const open = () => store.openTicket(boardKey, ticket.nn);
   const summary = ticket.summary ?? ticket.note;
   const tags = [COLUMN_META[ticket.col].label, modelTag(ticket)].filter((t): t is string => t !== null);
   const metric = checksMetric(ticket);
   return (
-    <article className={styles.card} aria-label={`${ticket.nn} ${ticket.title}`}>
+    <article className={styles.card} aria-label={`${ticket.nn} ${ticket.title}`}
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      }}
+    >
       <div>
         <div className={styles.head}>
           <span className={styles.headLeft}>
