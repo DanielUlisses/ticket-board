@@ -1,0 +1,35 @@
+/* Prototype .board-section and .cards-grid. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.board {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* Stale board (box offline): greyed with its last-seen time. Not in the prototype. */
+.board[data-stale="true"] {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+@media (min-width: 640px) {
+  .grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1024px) {
+  .grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 1280px) {
+  .grid { grid-template-columns: repeat(4, 1fr); }
+}
+.empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 24px;
+}

@@ -1,0 +1,100 @@
+/* Prototype header.navbar. */
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 54px;
+  padding: 0 14px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.brandGlyph {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.pageSwitch {
+  display: inline-flex;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 2px;
+}
+.pageBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 9999px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.pageBtn[aria-pressed="true"] {
+  background: var(--text-primary);
+  color: #fff;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--icon-working);
+}
+.right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.btnPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.btnPill:hover:not(:disabled) {
+  border-color: var(--text-primary);
+}
+.primary {
+  background: var(--text-primary);
+  color: #fff;
+  border-color: var(--text-primary);
+}
+.btnPill:disabled {
+  cursor: not-allowed;
+}

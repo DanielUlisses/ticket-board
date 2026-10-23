@@ -1,4 +1,39 @@
-// The shell (Navbar, Cards, Live Board) arrives with ticket 09.
-export function App() {
-  return <main>tk-hub</main>;
+import { useEffect } from "react";
+import type { HubClient } from "./api/client";
+import styles from "./App.module.css";
+import { CardGrid } from "./components/CardGrid";
+import { Controls } from "./components/Controls";
+import { LiveBoard } from "./components/LiveBoard";
+import { Navbar } from "./components/Navbar";
+import { StoreProvider, useView } from "./components/StoreContext";
+import { Toasts } from "./components/Toasts";
+import type { Store } from "./store/store";
+
+function Shell({ client }: { client: HubClient }) {
+  const { page, counts } = useView();
+  const needsYou = counts.attention; // under the Devbox / Board filters
+  useEffect(() => {
+    document.title = needsYou > 0 ? `(${needsYou}) tk-hub` : "tk-hub";
+  }, [needsYou]);
+  return (
+    <>
+      <Navbar onScan={(devbox) => void client.scan(devbox)} />
+      <Controls />
+      <main className={styles.main}>{page === "cards" ? <CardGrid /> : <LiveBoard />}</main>
+      <Toasts />
+    </>
+  );
+}
+
+/** The hub-web frame: everything reads the one store, fed by the hub client. */
+export function App({ store, client }: { store: Store; client: HubClient }) {
+  useEffect(() => {
+    void client.start();
+    return () => client.stop();
+  }, [client]);
+  return (
+    <StoreProvider store={store}>
+      <Shell client={client} />
+    </StoreProvider>
+  );
 }
