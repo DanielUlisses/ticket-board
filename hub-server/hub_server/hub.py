@@ -22,7 +22,11 @@ TIMEOUT = 120.0
 UI_SEND_TIMEOUT = 5.0
 RESULT_FIELDS = ("id", "ok", "exit_code", "output_tail", "reason", "data")
 # The ticket RPCs POST .../tickets/{nn}/action routes to the board's daemon.
-TICKET_ACTIONS = ("launch_ticket", "say_agent", "pane_tail")
+TICKET_ACTIONS = (
+    "launch_ticket", "say_agent", "pane_tail",
+    "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
+    "resolve_ticket",
+)  # fmt: skip
 # tk.sh launch --type values (ticket-skill's branch prefixes).
 TICKET_TYPES = ("feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci")
 

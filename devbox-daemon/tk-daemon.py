@@ -62,6 +62,7 @@ does, for the default 60 s).
 import asyncio
 import contextlib
 import fcntl
+import functools
 import json
 import logging
 import os
@@ -113,7 +114,7 @@ RESUME = re.compile(r"^tk-export: resume ([0-9]+)$", re.MULTILINE)
 TAIL = 4000  # characters of output_tail
 PANE = 200_000  # characters of a pane_tail's data.pane
 # RPCs that change nothing: no re-export after them (pane_tail is polled).
-READ_ONLY_RPCS = frozenset({"rescan_boards", "pane_tail"})
+READ_ONLY_RPCS = frozenset({"rescan_boards", "pane_tail", "verify_landed"})
 MAX_PARALLEL = 5  # running tickets per box, unless the box policy says otherwise
 RUNNING = ("working", "review")  # as tk-export.sh counts health.running
 # tk.sh say / show exit codes, as the UI shows them.
@@ -121,6 +122,23 @@ AGENT_EXITS = {
     20: "dialog: the agent is at a dialog or not at its prompt; answer it in its herdr tab",
     21: "no agent: the ticket's agent isn't running",
 }
+
+# The ship RPCs: tk.sh verb and the columns the ticket may be in when it runs.
+SHIP_VERBS = {
+    "open_pr": ("pr", ("human",)),
+    "ssh_push": ("push", ("human",)),
+    "merge_pr": ("merge", ("pr",)),
+    "resolve_nocode": ("resolve", ("needs", "review", "human", "pr")),
+    "resolve_ticket": ("resolve", ("done",)),  # landed: plain resolve, never --no-code
+}  # fmt: skip
+# tk.sh merge's gate exit codes (run_gates), as the UI shows them.
+MERGE_EXITS = {
+    10: "conflicts: the PR conflicts with the base branch",
+    11: "checks pending: the PR's checks are still running",
+    12: "gate failed: the PR is not ready to merge",
+}
+SHIP_EXITS = {5: "tk.sh wants the claude runner for this verb (exit 5)"}
+GATE_LINE = re.compile(r"^GATE (\w+) (PASS|FAIL)\b ?(.*)$")
 
 log = logging.getLogger("tk-daemon")
 
@@ -355,6 +373,12 @@ class Daemon:
             "set_archived": self.rpc_set_archived,
             "set_policy": self.rpc_set_policy,
             "propose_memory": self.rpc_propose_memory,
+            "open_pr": functools.partial(self.rpc_ship, "open_pr"),
+            "ssh_push": functools.partial(self.rpc_ship, "ssh_push"),
+            "merge_pr": functools.partial(self.rpc_ship, "merge_pr"),
+            "resolve_nocode": functools.partial(self.rpc_ship, "resolve_nocode"),
+            "resolve_ticket": functools.partial(self.rpc_ship, "resolve_ticket"),
+            "verify_landed": self.rpc_verify_landed,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -510,7 +534,10 @@ class Daemon:
         return rc, out + err
 
     async def col(self, board: dict, nn: str) -> str:
-        """The ticket's column now: `tk.sh export`, not the last snapshot; bounded
+        return (await self.row(board, nn)).get("col")
+
+    async def row(self, board: dict, nn: str) -> dict:
+        """The ticket's row now: `tk.sh export`, not the last snapshot; bounded
         by export_call_timeout_s, as tk-export.sh bounds it."""
         limit = self.cfg["export_call_timeout_s"]
         try:
@@ -526,7 +553,7 @@ class Daemon:
         found = next((t for t in tickets if t.get("nn") == nn), None)
         if found is None:
             raise RpcRefused(f"no ticket {nn} on board {board['key']}")
-        return found.get("col")
+        return found
 
     def col_sent(self, key: str, nn: str) -> str | None:
         tickets = self.sent.get(key, {}).get("tickets") or []
@@ -622,18 +649,18 @@ class Daemon:
         return result
 
     @staticmethod
-    def log_orphan(slot: tuple[str, str], task: asyncio.Task):
-        """The outcome of a launch whose rpc already answered (timed out)."""
+    def log_orphan(slot: tuple[str, str], task: asyncio.Task, what: str = "launch"):
+        """The outcome of a launch (or ship verb) whose rpc already answered (timed out)."""
         if task.cancelled():
-            log.warning("launch %s %s cancelled after its rpc", *slot)
+            log.warning("%s %s %s cancelled after its rpc", what, *slot)
         elif (e := task.exception()) is not None:
-            log.warning("launch %s %s failed after its rpc: %s", *slot, e)
+            log.warning("%s %s %s failed after its rpc: %s", what, *slot, e)
         else:
             rc, out = task.result()
             tail = out.strip().splitlines()
             log.warning(
-                "launch %s %s finished after its rpc: exit %s%s",
-                *slot, rc, f" ({tail[-1]})" if tail else "",
+                "%s %s %s finished after its rpc: exit %s%s",
+                what, *slot, rc, f" ({tail[-1]})" if tail else "",
             )  # fmt: skip
 
     async def launch_locked(
@@ -678,6 +705,105 @@ class Daemon:
                 self.reserved[slot] = time.monotonic()
             else:
                 self.reserved.pop(slot, None)
+
+    async def locked_tk(
+        self,
+        board: dict,
+        nn: str,
+        cols: tuple[str, ...] | None,
+        *args: str,
+        landed: bool = False,
+    ) -> tuple[int, str]:
+        """tk.sh <args> under the board's queue and flock, after re-checking the
+        ticket is in one of `cols` (any when None) and, with `landed`, that its
+        landed verdict is yes:*. The work runs in a task of
+        its own: the rpc timeout answers the hub but never kills a merge midway."""
+
+        async def work() -> tuple[int, str]:
+            # Ship verbs share the per-board queue with launches: one waits
+            # behind the other, by design.
+            queue = self.board_locks.setdefault(board["key"], asyncio.Lock())
+            async with queue:
+                if self.stopping:  # its turn came during shutdown: don't start
+                    raise RpcRefused("daemon stopping")
+                lock = await board_lock(
+                    board["board_path"], self.cfg["launch_lock_wait_s"]
+                )
+                try:
+                    if self.stopping:  # the stop came while it waited on the flock
+                        raise RpcRefused("daemon stopping")
+                    found = await self.row(board, nn)
+                    if cols is not None and (col := found.get("col")) not in cols:
+                        raise RpcRefused(
+                            f"ticket {nn} is {col}, not {' or '.join(cols)}"
+                        )
+                    if landed and not str(found.get("landed")).startswith("yes:"):
+                        # tk.sh would rewrite the Status date of a resolved ticket.
+                        raise RpcRefused(
+                            f"ticket {nn} is not landed (landed: {found.get('landed')})"
+                        )
+                    return await self.tk(board, *args)
+                finally:
+                    lock.close()
+
+        task = asyncio.create_task(work())
+        self.launches.add(task)
+        task.add_done_callback(self.launches.discard)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            slot = (board["key"], nn)
+            log.warning("%s %s outlived its rpc; it carries on", args[0], nn)
+            task.add_done_callback(lambda t: self.log_orphan(slot, t, args[0]))
+            raise
+
+    async def rpc_ship(self, method: str, ws, params: dict) -> dict:
+        """open_pr / ssh_push / merge_pr / resolve_nocode / resolve_ticket: the matching tk.sh
+        verb under the board flock, after a col re-check. Gate failures of merge
+        (10/11/12) come back by exit code with the gates in data.gates."""
+        board, nn = self.board(params), params["nn"]
+        verb, cols = SHIP_VERBS[method]
+        extra = []
+        if method == "resolve_nocode":
+            reason = " ".join(params["reason"].split())
+            if not reason:
+                raise RpcRefused("resolve without code needs a reason")
+            extra = ["--no-code", reason]
+        rc, out = await self.locked_tk(
+            board, nn, cols, verb, nn, *extra, landed=method == "resolve_ticket"
+        )
+        result = {"ok": rc == 0, "exit_code": rc, "output_tail": out}
+        if method == "merge_pr":
+            merged = any(line.startswith("MERGED ") for line in out.splitlines())
+            gates = [
+                {"gate": m[1], "status": m[2].lower(), "detail": m[3]}
+                for line in out.splitlines()
+                if (m := GATE_LINE.match(line.strip()))
+            ]
+            result["data"] = {"gates": gates, "merged": merged}
+            if rc in MERGE_EXITS:
+                result["reason"] = MERGE_EXITS[rc]
+            elif merged and rc != 0:
+                tail = out.strip().splitlines()
+                result["reason"] = (
+                    f"merged, but resolve failed: {tail[-1] if tail else f'exit {rc}'}"
+                )
+        elif rc in SHIP_EXITS:
+            result["reason"] = SHIP_EXITS[rc]
+        return result
+
+    async def rpc_verify_landed(self, ws, params: dict) -> dict:
+        """tk.sh why: data.landed (the LANDED verdict) and data.open_pr (the
+        OPEN PR line's text after the label)."""
+        board, nn = self.board(params), params["nn"]
+        rc, out = await self.locked_tk(board, nn, ("pr",), "why", nn)
+        data = {"landed": None, "open_pr": None}
+        for line in out.splitlines():
+            if line.startswith("LANDED "):
+                data["landed"] = line[len("LANDED ") :].strip()
+            elif line.startswith("OPEN PR "):
+                data["open_pr"] = line[len("OPEN PR ") :].strip()
+        return {"ok": rc == 0, "exit_code": rc, "output_tail": out, "data": data}
 
     async def rpc_say_agent(self, ws, params: dict) -> dict:
         """tk.sh say, the message passed as a file (deleted after)."""

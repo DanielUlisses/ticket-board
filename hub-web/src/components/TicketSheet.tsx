@@ -7,18 +7,19 @@ import { LaunchControl } from "./LaunchControl";
 import { PaneTail } from "./PaneTail";
 import { Relay } from "./Relay";
 import { ReportModal } from "./ReportModal";
+import { ShipActions } from "./ShipActions";
 import { useStore, useView } from "./StoreContext";
 import styles from "./TicketSheet.module.css";
 
 export { PANE_MS } from "./PaneTail";
 
 /** The hub calls the sheet makes. */
-export type DetailApi = Pick<HubClient, "activity" | "report" | "launch" | "say" | "paneTail" | "proposeMemory">;
+export type DetailApi = Pick<HubClient, "activity" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "ship" | "resolveNoCode">;
 
 /** Columns where the ticket has an agent: relay to it, tail its pane. */
 const WITH_AGENT: ReadonlySet<Column> = new Set(["needs", "working", "review", "human"]);
 
-/** The footer's actions by column: ▶ Launch on backlog, the relay (↵ Send, primary on needs) where there is an agent. */
+/** The footer's actions by column: ▶ Launch on backlog, the relay (↵ Send, primary on needs) where there is an agent, then the ship actions (PR/push, merge, resolve). */
 function Actions({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
   const { pending } = useView();
   const waiting = (method: string) =>
@@ -31,15 +32,18 @@ function Actions({ board, ticket, api }: { board: Board; ticket: Ticket; api: De
         onLaunch={(s) => void api.launch(board.key, ticket.nn, s)}
       />
     );
-  if (WITH_AGENT.has(ticket.col))
-    return (
-      <Relay
-        primary={ticket.col === "needs"}
-        pending={waiting("say_agent")}
-        onSend={(message) => api.say(board.key, ticket.nn, message)}
-      />
-    );
-  return null;
+  return (
+    <>
+      {WITH_AGENT.has(ticket.col) && (
+        <Relay
+          primary={ticket.col === "needs"}
+          pending={waiting("say_agent")}
+          onSend={(message) => api.say(board.key, ticket.nn, message)}
+        />
+      )}
+      <ShipActions board={board} ticket={ticket} api={api} />
+    </>
+  );
 }
 
 /** `backlog → working 14:02`, then `→ review 15:40` for the moves after the first. */

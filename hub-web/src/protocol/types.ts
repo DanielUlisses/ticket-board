@@ -58,6 +58,8 @@ export interface Ticket {
   pr: Pr | null;
   checks: Record<string, string>;
   col: Column;
+  /** `-`, `no`, `yes:<how>` or `unknown:<why>` (board-lib.sh landed). */
+  landed: string;
   note: string;
   hint: string;
   summary: string | null;

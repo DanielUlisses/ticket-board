@@ -39,6 +39,9 @@ export interface HubClientDeps {
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 
+/** The ticket RPCs with no params besides the ticket. */
+export type ShipMethod = "open_pr" | "ssh_push" | "merge_pr" | "verify_landed" | "resolve_ticket";
+
 /** What ▶ Launch runs with: the suggestions, or the unlocked selects. */
 export interface LaunchSettings {
   type: TicketType;
@@ -153,6 +156,15 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     async say(boardKey: string, nn: string, message: string): Promise<string | null> {
       const res = await ticketAction("↵ Send", boardKey, nn, "say_agent", { message });
       return res?.rpcs[0]?.id ?? null;
+    },
+    /** ⇡ Open PR, ⇡ Push via SSH, ✓ Merge, Verify or Resolve (landed: plain tk.sh resolve); true when the hub took it. Results arrive as rpc_results (merge: data.gates; verify: data.landed, data.open_pr). */
+    async ship(label: string, boardKey: string, nn: string, method: ShipMethod): Promise<boolean> {
+      return (await ticketAction(label, boardKey, nn, method, {})) !== null;
+    },
+    /** tk.sh resolve --no-code "<reason>": the reason is required. */
+    async resolveNoCode(boardKey: string, nn: string, reason: string): Promise<boolean> {
+      if (!reason.trim()) return false;
+      return (await ticketAction("Resolve", boardKey, nn, "resolve_nocode", { reason: reason.trim() })) !== null;
     },
     /** One poll of the agent's pane; its lines arrive as a pane_tail rpc_result. Rejects when not sent. */
     async paneTail(boardKey: string, nn: string, lines: number): Promise<void> {
