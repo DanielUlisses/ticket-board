@@ -3,20 +3,40 @@
 // actions waiting on their rpc_result and the agent panes (pane_tail).
 // Components read it through `view()` (a cached snapshot, stable between
 // changes, so it plugs into useSyncExternalStore) and never keep their own copy.
-import { COLUMN_META, type Group } from "../columns";
+import { COLUMN_META, GROUPS, type Group } from "../columns";
 import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, SynthesisEvent, UiEvent } from "../protocol/types";
 
-/** The Stage select and the pills: one filter, over the column groups. */
+/** The stage presets (pills) and the keys of `Counts`: "all" is every group. */
 export type Stage = "all" | Group;
 
 export type Counts = Record<Stage, number>;
 
-/** The Devbox / Board selects (null: all) and the stage (select or pill). */
+/**
+ * The Devbox select (null: all), the Stage selection (the pills are presets of
+ * it) and the Board picks: only what the user ticked or unticked, by board key.
+ * A board with no pick follows the default (ticked unless archived), so boards
+ * arriving later need no entry and an unticked one stays unticked.
+ */
 export interface Filter {
   devbox: string | null;
-  board: string | null;
-  stage: Stage;
+  boards: Readonly<Record<string, boolean>>;
+  stages: Group[];
 }
+
+const ALL_GROUPS: Group[] = GROUPS.map((g) => g.group);
+
+/** The stage set a pill stands for: "all" is every group including Done. */
+export const stagesFor = (stage: Stage): Group[] => (stage === "all" ? [...ALL_GROUPS] : [stage]);
+
+/** The pill whose preset exactly matches the stage set, if any. */
+export const presetOf = (stages: readonly Group[]): Stage | null =>
+  STAGES.find((st) => {
+    const want = stagesFor(st);
+    return want.length === stages.length && want.every((g) => stages.includes(g));
+  }) ?? null;
+
+/** Whether the Board selection shows this board (its pick, else ticked unless archived). */
+export const isBoardShown = (filter: Filter, board: Board) => filter.boards[board.key] ?? !board.hub_meta.archived;
 
 export type Page = "cards" | "live";
 
@@ -38,12 +58,12 @@ export interface View {
   filter: Filter;
   /** Boards passing the filters, each with only its passing tickets. */
   boards: Board[];
-  /** Ticket counts per stage under the Devbox and Board selects (not the stage). */
+  /** Ticket counts per stage under the Devbox select and Board ticks (not the stage). */
   counts: Counts;
   devboxes: Devbox[];
-  /** Every non-archived board, unfiltered: the Devbox and Board select options. */
+  /** Every non-archived board, unfiltered: the Devbox and Board options. */
   allBoards: Board[];
-  /** Archived boards, unfiltered: the Board select's "Archived (n)" list. */
+  /** Archived boards, unfiltered: the Board dropdown's "Archived" section. */
   archivedBoards: Board[];
   /** `ticketId`s of tickets that just moved (Live Board plays `pulseMove`). */
   justMoved: ReadonlySet<string>;
@@ -74,11 +94,13 @@ interface State {
   ship: Record<string, RpcResult>;
 }
 
-const NO_FILTER: Filter = { devbox: null, board: null, stage: "all" };
+/** Every group except Done: running, frontier and blocked tickets show, finished ones don't. */
+const NO_FILTER: Filter = { devbox: null, boards: {}, stages: ALL_GROUPS.filter((g) => g !== "done") };
 
 const STAGES: readonly Stage[] = ["all", "attention", "active", "frontier", "blocked", "done"];
 
 const inStage = (stage: Stage, t: Ticket) => stage === "all" || COLUMN_META[t.col].group === stage;
+const inStages = (stages: readonly Group[], t: Ticket) => stages.includes(COLUMN_META[t.col].group);
 
 /**
  * How long a ticket stays just-moved: kept above twice the pulse (2 × 1.1 s,
@@ -170,10 +192,6 @@ export function createStore() {
 
   function set(next: Partial<State>) {
     state = { ...state, ...next };
-    // A selected board that was removed or archived can no longer be picked.
-    const picked = state.filter.board;
-    if (picked !== null && !state.boards.some((b) => b.key === picked && !b.hub_meta.archived))
-      state = { ...state, filter: { ...state.filter, board: null } };
     // An opened ticket whose board or ticket is gone stays closed, even if it returns.
     const o = state.opened;
     if (o && !state.boards.some((b) => b.key === o.boardKey && b.tickets.some((t) => t.nn === o.nn)))
@@ -310,10 +328,10 @@ export function createStore() {
 
   const visible = () => state.boards.filter((b) => !b.hub_meta.archived);
 
-  /** Non-archived boards under the Devbox and Board selects. */
+  /** Boards under the Devbox select and the Board ticks (an archived one only when ticked). */
   function selected(): Board[] {
-    const { devbox, board } = state.filter;
-    return visible().filter((b) => (devbox === null || b.devbox === devbox) && (board === null || b.key === board));
+    const { devbox } = state.filter;
+    return state.boards.filter((b) => (devbox === null || b.devbox === devbox) && isBoardShown(state.filter, b));
   }
 
   const count = (boards: Board[], stage: Stage) =>
@@ -327,16 +345,16 @@ export function createStore() {
   }
 
   function compute(): View {
-    const { stage } = state.filter;
+    const { stages } = state.filter;
     const boards = selected();
     return {
       page: state.page,
       filter: state.filter,
       boards:
-        stage === "all"
+        stages.length === ALL_GROUPS.length
           ? boards
           : boards
-              .map((b) => ({ ...b, tickets: b.tickets.filter((t) => inStage(stage, t)) }))
+              .map((b) => ({ ...b, tickets: b.tickets.filter((t) => inStages(stages, t)) }))
               .filter((b) => b.tickets.length > 0),
       counts: Object.fromEntries(STAGES.map((st) => [st, count(boards, st)])) as Counts,
       devboxes: state.devboxes,

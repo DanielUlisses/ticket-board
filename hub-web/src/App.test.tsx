@@ -78,11 +78,12 @@ describe("App", () => {
     expect(screen.getAllByTitle(/^\d+ /).map((p) => p.title.split(" ")[0])).toEqual(["01", "03", "05"]);
   });
 
-  it("the pills and the Stage select are one filter", async () => {
+  it("the pills and the Stage multi-select are one filter", async () => {
     await renderApp();
-    const stage = screen.getByRole("combobox", { name: "Stage" });
-    expect(within(stage).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "All Stages",
+    expect(screen.getByRole("button", { name: "Stage" })).toHaveTextContent("Stages (4)");
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    const box = (name: string) => screen.getByRole("checkbox", { name });
+    expect(screen.getAllByRole("checkbox").map((c) => c.parentElement!.textContent)).toEqual([
       "Needs You / Human Gate",
       "Active (Working / Review)",
       "Frontier Ready",
@@ -90,17 +91,20 @@ describe("App", () => {
       "Done",
     ]);
     fireEvent.click(pill(/^Frontier/));
-    expect(stage).toHaveValue("frontier");
-    fireEvent.change(stage, { target: { value: "active" } });
+    expect(box("Frontier Ready")).toBeChecked();
+    expect(box("Active (Working / Review)")).not.toBeChecked();
+    fireEvent.click(box("Active (Working / Review)"));
+    expect(pill(/^Active/)).toHaveAttribute("aria-pressed", "false"); // frontier + active: no preset
+    fireEvent.click(box("Frontier Ready"));
     expect(pill(/^Active/)).toHaveAttribute("aria-pressed", "true");
-    expect(pill(/^Frontier/)).toHaveAttribute("aria-pressed", "false");
     expect(cardNumbers()).toEqual(["02", "06"]);
-    fireEvent.change(stage, { target: { value: "done" } });
+    fireEvent.click(box("Active (Working / Review)"));
+    fireEvent.click(box("Done"));
     expect(screen.getAllByRole("button", { pressed: true }).map((b) => b.textContent)).toEqual(["Cards"]);
     expect(cardNumbers()).toEqual(["04"]);
   });
 
-  it("the Devbox and Board selects filter and narrow the counts, not the stage", async () => {
+  it("the Devbox select and Board ticks narrow the counts, not the stage, on both pages", async () => {
     await renderApp();
     const devbox = screen.getByRole("combobox", { name: "Devbox" });
     expect(within(devbox).getAllByRole("option").map((o) => o.textContent)).toEqual([
@@ -108,19 +112,23 @@ describe("App", () => {
       "dev-daniel",
       "dev-acme",
     ]);
-    const board = screen.getByRole("combobox", { name: "Board" });
-    expect(within(board).getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "All Boards (3)",
+    expect(screen.getByRole("button", { name: "Board" })).toHaveTextContent("Boards (3)");
+    fireEvent.click(screen.getByRole("button", { name: "Board" }));
+    expect(screen.getAllByRole("checkbox").map((c) => c.parentElement!.textContent)).toEqual([
       "tk-hub · ticket-skill",
       "tk-hub · devboxes",
       "tk-hub · ticket-board",
     ]);
-    fireEvent.change(board, { target: { value: "dev-daniel/ticket-skill/tk-hub" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "tk-hub · devboxes" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "tk-hub · ticket-board" }));
+    expect(screen.getByRole("button", { name: "Board" })).toHaveTextContent("Boards (1)");
     expect(pill(/^Needs You/)).toHaveTextContent("Needs You (2)");
-    expect(cardNumbers()).toEqual(["01", "02", "03", "04"]);
+    expect(cardNumbers()).toEqual(["01", "02", "03"]);
     fireEvent.click(pill(/^Active/));
     expect(pill(/^Needs You/)).toHaveTextContent("Needs You (2)");
     expect(cardNumbers()).toEqual(["02"]);
+    fireEvent.click(screen.getByRole("button", { name: "Live Board" }));
+    expect(screen.getAllByTitle(/^\d+ /).map((p) => p.title.split(" ")[0])).toEqual(["02"]);
   });
 
   it("the tab title carries the Needs You count under the Devbox / Board filters and follows WS events", async () => {
