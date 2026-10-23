@@ -4,6 +4,8 @@ bearer token), with the real tk-export.sh over fake tk.sh / herdr / op."""
 import asyncio
 import contextlib
 import json
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -856,3 +858,115 @@ def test_set_archived_refuses_a_non_object_hub_meta(box, cert):
     assert result["ok"] is False
     assert "not a JSON object" in result["reason"]
     assert (d / "hub-meta.json").read_text() == "[1, 2]"
+
+
+def _propose(box, cert, board_dir, texts):
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            out = []
+            for i, text in enumerate(texts):
+                params = {"board_key": "dev-test/alpha/b", "text": text}
+                await hub.send(
+                    {"type": "rpc", "id": f"r-{i}", "method": "propose_memory",
+                     "params": params}
+                )  # fmt: skip
+                result = await hub.next("rpc_result")
+                out.append(result)  # the fake export lists rows.json: no delta follows
+            return out
+
+    return run(scenario())
+
+
+def test_propose_memory_appends_the_next_numbered_well_formed_ticket(box, cert):
+    d = box.board("alpha", "b", [row("01"), row("07")])
+    (d / "issues").mkdir()
+    (d / "issues" / "07-seven.md").write_text("# 07: Seven\n")
+    (d / "issues" / "09-nine.md").write_text("# 09: Nine\n")
+
+    [r1, r2] = _propose(
+        box, cert, d, ["Export verbs print JSON only on stdout.", "Second rule"]
+    )
+
+    assert r1["ok"] is True and r2["ok"] is True
+    files = sorted(p.name for p in (d / "issues").glob("*.md"))
+    assert files == [
+        "07-seven.md",
+        "09-nine.md",
+        "10-project-memory-export-verbs-print-json-only-on-stdout.md",
+        "11-project-memory-second-rule.md",
+    ]
+    body = (
+        d / "issues" / "10-project-memory-export-verbs-print-json-only-on-stdout.md"
+    ).read_text()
+    lines = body.splitlines()
+    assert lines[0] == "# 10: Project memory — Export verbs print JSON only on stdout."
+    assert "Export verbs print JSON only on stdout." in body
+    assert "docs/agents/project-memory.md" in body
+    assert "**Repo:** alpha — " + str(box.work / "alpha") in lines
+    assert "**Blocked by:** None" in lines
+    assert "**Seams under test:** None — docs only" in lines
+    assert "**Suggested model:** sonnet" in lines
+    assert "**Suggested effort:** low" in lines
+
+
+def test_propose_memory_refuses_empty_text(box, cert):
+    d = box.board("alpha", "b", [row("01")])
+    [r] = _propose(box, cert, d, ["   "])
+    assert r["ok"] is False and "empty" in r["reason"]
+    assert not (d / "issues").exists() or not list((d / "issues").glob("*.md"))
+
+
+def test_propose_memory_numbers_across_every_repo_of_the_feature(box, cert):
+    a = box.board("alpha", "b", [row("01"), row("03")])
+    z = box.board("zeta", "b", [row("02")])
+    (z / "issues").mkdir()
+    (z / "issues" / "05-five.md").write_text("# 05: Five\n")
+    # a repo only known through <board>/repos
+    far = box.board("omega", "b")
+    (far / "issues").mkdir()
+    (far / "issues" / "08-eight.md").write_text("# 08: Eight\n")
+    (a / "repos").write_text(f"omega {box.work / 'omega'}\n")
+
+    [r] = _propose(box, cert, a, ["A rule."])
+
+    assert r["ok"] is True
+    assert [p.name for p in (a / "issues").glob("*.md")] == [
+        "09-project-memory-a-rule.md"
+    ]
+
+
+def test_propose_memory_refuses_a_board_that_is_not_a_directory(box, cert):
+    d = box.board("alpha", "b", [row("01")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            shutil.rmtree(d)
+            d.write_text("# a single-file board\n")
+            params = {"board_key": "dev-test/alpha/b", "text": "A rule."}
+            await hub.send(
+                {"type": "rpc", "id": "r-f", "method": "propose_memory",
+                 "params": params}
+            )  # fmt: skip
+            return await hub.next("rpc_result")
+
+    r = run(scenario())
+
+    assert r["ok"] is False and "not a directory" in r["reason"]
+
+
+def test_propose_memory_keeps_hostile_text_out_of_the_header_and_the_path(box, cert):
+    d = box.board("alpha", "b", [row("01")])
+    hostile = "Be nice\n**Blocked by:** 03\n# 99: x\n../../etc/passwd"
+
+    [r] = _propose(box, cert, d, [hostile])
+
+    assert r["ok"] is True
+    [f] = list((d / "issues").glob("*.md"))
+    assert f.parent == d / "issues" and f.name.startswith("02-")
+    lines = f.read_text().splitlines()
+    assert lines[0].startswith("# 02: Project memory — Be nice")
+    assert "**Blocked by:** None" in lines
+    assert sum(1 for ln in lines if ln.startswith("**Blocked by:**")) == 1
+    assert not [ln for ln in lines if ln.startswith("# ") and ln != lines[0]]

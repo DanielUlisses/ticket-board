@@ -16,6 +16,7 @@ function setup(open: [string, string]) {
     activity: vi.fn().mockResolvedValue([]),
     report: vi.fn().mockResolvedValue({ full_report_md: null, body: "" }),
     launch: vi.fn().mockResolvedValue(undefined),
+    proposeMemory: vi.fn().mockResolvedValue(true),
     say: vi.fn().mockResolvedValue("r-say"),
     paneTail: vi.fn().mockResolvedValue(undefined),
   };

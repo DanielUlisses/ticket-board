@@ -27,6 +27,7 @@ REST_DEFS = [
     ("POST", re.compile(r"^/api/boards/.+/frontier$"), "rest_action"),
     ("POST", re.compile(r"^/api/boards/.+/archive$"), "rest_archive"),
     ("POST", re.compile(r"^/api/boards/.+/policy$"), "rest_set_policy"),
+    ("POST", re.compile(r"^/api/boards/.+/memory$"), "rest_propose_memory"),
 ]
 
 

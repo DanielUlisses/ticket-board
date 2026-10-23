@@ -25,6 +25,7 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
       { from: "working", to: "review", at: "2026-10-23T15:40:00Z" },
     ]),
     report: vi.fn().mockResolvedValue(REPORT),
+    proposeMemory: vi.fn().mockResolvedValue(true),
     launch: vi.fn().mockResolvedValue(undefined),
     say: vi.fn().mockResolvedValue(null),
     paneTail: vi.fn().mockResolvedValue(undefined),
@@ -178,6 +179,7 @@ describe("TicketSheet", () => {
             launch: async () => {},
             say: async () => null,
             paneTail: async () => {},
+            proposeMemory: async () => true,
           }}
         />
       </StoreProvider>,
@@ -245,5 +247,53 @@ describe("report modal", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Full Review & Reasoning" })).not.toBeInTheDocument();
     expect(sheet()).toBeInTheDocument();
+  });
+
+  describe("Propose to memory", () => {
+    const dialog = () => screen.getByRole("dialog");
+    const field = () => within(dialog()).getByRole("textbox", { name: "Propose to memory" }) as HTMLTextAreaElement;
+    const button = () => within(dialog()).getByRole("button", { name: "Propose to memory" });
+
+    it("prefills from the synthesis rule, is editable, and sends the edited text", async () => {
+      const { client } = setup([KEY, "01"]);
+      expect(field().value).toBe("Export verbs print JSON only on stdout; everything else goes to stderr.");
+      fireEvent.change(field(), { target: { value: "  My own rule.  " } });
+      fireEvent.click(button());
+      expect(client.proposeMemory).toHaveBeenCalledWith(KEY, "My own rule.");
+      await waitFor(() => expect(field().value).toBe(""));
+    });
+
+    it("accepts free text when synthesis offered none, and refuses an empty one", () => {
+      const { client } = setup([KEY, "02"]);
+      expect(field().value).toBe("");
+      expect(button()).toBeDisabled();
+      fireEvent.change(field(), { target: { value: "Typed by hand." } });
+      fireEvent.click(button());
+      expect(client.proposeMemory).toHaveBeenCalledWith(KEY, "Typed by hand.");
+    });
+
+    it("follows a rule that arrives later until the developer edits the field", () => {
+      const { store } = setup([KEY, "02"]);
+      expect(field().value).toBe("");
+      const synced = (rule: string) => {
+        const data = boardsResponse();
+        data.boards.find((b) => b.key === KEY)!.tickets.find((t) => t.nn === "02")!.new_memory_rule = rule;
+        act(() => store.load(data));
+      };
+      synced("First rule.");
+      expect(field().value).toBe("First rule.");
+      fireEvent.change(field(), { target: { value: "Mine." } });
+      synced("Second rule.");
+      expect(field().value).toBe("Mine.");
+    });
+
+    it("keeps the text when the proposal fails", async () => {
+      const { client } = setup([KEY, "02"], { proposeMemory: vi.fn().mockResolvedValue(false) });
+      fireEvent.change(field(), { target: { value: "Keep me." } });
+      fireEvent.click(button());
+      await waitFor(() => expect(button()).toBeEnabled());
+      expect(client.proposeMemory).toHaveBeenCalledTimes(1);
+      expect(field().value).toBe("Keep me.");
+    });
   });
 });

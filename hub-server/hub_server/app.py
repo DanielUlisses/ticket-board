@@ -193,6 +193,10 @@ class PolicyRequest(BaseModel):
     values: PolicyValues
 
 
+class MemoryProposal(BaseModel):
+    text: str
+
+
 def create_app(
     db_path: Path | str,
     *,
@@ -370,6 +374,29 @@ def create_app(
                 board["devbox"],
                 "set_policy",
                 {"board_key": board_key, "values": values},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(
+                404, f"devbox {board['devbox']} is not connected"
+            ) from None
+        return {"rpc": {"id": rpc_id, "devbox": board["devbox"]}}
+
+    @app.post("/api/boards/{board_key:path}/memory", status_code=202)
+    async def propose_memory(board_key: str, request: MemoryProposal):
+        """propose_memory on the board's devbox: the daemon appends a project-memory
+        ticket to the board. The hub never writes project-memory.md itself."""
+        board = hub.store.boards.get(board_key)
+        if not board:
+            raise HTTPException(404, f"no board {board_key}")
+        text = request.text.strip()
+        if not text:
+            raise HTTPException(422, "empty memory rule")
+        try:
+            rpc_id = await hub.send_rpc(
+                board["devbox"],
+                "propose_memory",
+                {"board_key": board_key, "text": text},
                 board_key=board_key,
             )
         except DevboxOffline:
