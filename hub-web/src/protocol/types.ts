@@ -66,6 +66,10 @@ export interface Ticket {
   manual_tasks: ManualTask[];
   synthesis_backend: SynthesisBackend | null;
   synthesis_status: SynthesisStatus;
+  /** A durable rule the last synthesis run suggests for project memory. */
+  new_memory_rule?: string | null;
+  /** Why the last synthesis run failed (synthesis_status failed). */
+  synthesis_error?: string | null;
 }
 
 /** `$defs/policy` (subset): `tk.sh policy <board>`, resolved. */
@@ -169,11 +173,18 @@ export interface RpcResult {
   board_key?: string;
   nn?: string;
 }
-/** synthesis_* arrive on /ws/ui too; the shell ignores them (tickets 17/18). */
+/**
+ * `$defs/synthesis_event` / `synthesis_failed`, relayed by the hub from the daemon.
+ * nn null: the board brief (ticket 18). backend: the one about to run (started), that
+ * produced the result (finished), or tried last (failed).
+ */
 export interface SynthesisEvent {
   type: "synthesis_started" | "synthesis_finished" | "synthesis_failed";
   board_key: string;
   nn: string | null;
+  backend: SynthesisBackend | null;
+  at: Timestamp;
+  error?: string;
 }
 
 /** Every message the hub sends on /ws/ui. */

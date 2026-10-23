@@ -28,6 +28,15 @@ snapshot as soon as an export succeeds.
 rescan_boards waits for an export already running at most rpc_timeout_s -
 export_timeout_s, so it has time for its own.
 The box policy, ~/.config/tk-daemon/policy.json, is read by tk-export.sh.
+Synthesis (agy_runner.py): a ticket that moves into needs, human or pr between two
+exports (never one seen for the first time), and refine_with_comment, run the board's
+`synthesis.backends` on the ticket; the result lands in the board's hub-meta.json
+(`tickets.<NN>`; the file as it was before the run in hub-meta.prev.json), a failure
+keeps the last good content with `synthesis_status: failed`. The hub hears
+synthesis_started / synthesis_finished / synthesis_failed. One run per ticket at a time.
+A `running` status with no run behind it (the daemon was killed) becomes failed,
+"interrupted", at the next export. TK_AGY_TIMEOUT (seconds > 0, read at start)
+overrides `synthesis.timeout`; an invalid value of either is ignored with a warning.
 SIGTERM / SIGINT stop the daemon (closing the connection with 1001) and kill a
 running export.
 """
@@ -36,6 +45,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -50,6 +60,8 @@ from urllib.parse import urlsplit
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
+
+import agy_runner
 
 DAEMON_VERSION = "0.1.0"
 PROTOCOL_VERSION = "1.0"
@@ -75,6 +87,8 @@ POLICY_WRITABLE = {
     "night_shift": lambda v: isinstance(v, bool),
 }
 SYNTHESIS_RPCS = frozenset({"refine_with_comment", "refresh_board_brief", "run_retro"})
+SYNTHESIS_COLUMNS = frozenset({"needs", "human", "pr"})  # a move into one synthesizes
+SHOW_LINES = "180"  # tk.sh show <board> <NN> 180, part of the synthesis context
 FAILED = re.compile(r"^tk-export: failed (\S+)(?: (/.*))?$", re.MULTILINE)
 RESUME = re.compile(r"^tk-export: resume ([0-9]+)$", re.MULTILINE)
 TAIL = 4000  # characters of output_tail
@@ -211,19 +225,6 @@ def endpoint(url: str) -> tuple[str, str, int]:
     return f"wss://{u.hostname}:{port}{path}", u.hostname, port
 
 
-def kill_session(sid: int):
-    """SIGKILL every process in session `sid`: its process group, and the groups
-    `timeout` makes for the calls it runs (Linux /proc)."""
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(sid, signal.SIGKILL)
-    for name in os.listdir("/proc"):
-        if not name.isdigit():
-            continue
-        with contextlib.suppress(OSError):  # gone meanwhile, or not ours
-            if os.getsid(int(name)) == sid:
-                os.kill(int(name), signal.SIGKILL)
-
-
 async def run_cmd(
     argv: list[str], env: dict | None = None, cwd: str | None = None
 ) -> tuple[int, str, str]:
@@ -241,10 +242,99 @@ async def run_cmd(
     try:
         out, err = await proc.communicate()
     except asyncio.CancelledError:
-        kill_session(proc.pid)
+        agy_runner.kill_session(proc.pid)
         await proc.wait()
         raise
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+def tk_sh() -> str:
+    """tk.sh: $TK_SH, else on PATH, else the installed skill's (as tk-export.sh)."""
+    return os.environ.get("TK_SH") or (
+        "tk.sh"
+        if shutil.which("tk.sh")
+        else str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
+    )
+
+
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+# hub-meta.json is read-modify-written by several RPCs and synthesis runs: each read,
+# change and write happens with no await in between, so on the daemon's one event loop
+# no two interleave.
+def read_meta(board: Path, name: str = "hub-meta.json") -> dict:
+    f = board / name
+    meta = json.loads(f.read_text()) if f.exists() else {}
+    if not isinstance(meta, dict):
+        raise ValueError(f"{f} is not a JSON object")  # noqa: TRY004
+    return meta
+
+
+def write_meta(board: Path, meta: dict, name: str = "hub-meta.json"):
+    f = board / name
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps(meta, indent=2) + "\n")
+    tmp.replace(f)
+
+
+def ticket_meta(meta: dict, nn: str) -> dict:
+    """meta's `tickets.<nn>`, created when missing."""
+    tickets = meta.setdefault("tickets", {})
+    if not isinstance(tickets, dict):
+        raise ValueError("hub-meta.json: tickets is not a JSON object")  # noqa: TRY004
+    if not isinstance(tickets.get(nn), dict):
+        tickets[nn] = {}
+    return tickets[nn]
+
+
+def update_ticket_meta(board: Path, nn: str, fields: dict):
+    meta = read_meta(board)
+    ticket_meta(meta, nn).update(fields)
+    write_meta(board, meta)
+
+
+def synthesis_policy(board: dict) -> dict:
+    """The board's resolved `synthesis` policy; {} when it, or the policy, is missing,
+    null or not an object."""
+    policy = board.get("policy")
+    synthesis = policy.get("synthesis") if isinstance(policy, dict) else None
+    return synthesis if isinstance(synthesis, dict) else {}
+
+
+def synthesis_backends(policy: dict) -> list:
+    """`synthesis.backends`, ["agy"] when missing, empty or not a list."""
+    backends = policy.get("backends")
+    return list(backends) if isinstance(backends, list) and backends else ["agy"]
+
+
+def seconds(value) -> float | None:
+    """`value` (a number, or a string of one) as finite seconds > 0, else None."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        value = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def env_agy_timeout() -> float | None:
+    """$TK_AGY_TIMEOUT as seconds; None when unset, or invalid (said once, here)."""
+    raw = os.environ.get("TK_AGY_TIMEOUT", "")
+    if raw == "":
+        return None
+    if (value := seconds(raw)) is None:
+        log.warning("ignoring TK_AGY_TIMEOUT=%r: not a number of seconds > 0", raw)
+    return value
+
+
+def read_file(path: Path) -> str | None:
+    try:
+        return path.read_text(errors="replace")
+    except OSError:
+        return None
 
 
 class Daemon:
@@ -258,10 +348,16 @@ class Daemon:
         self.export_start = 0  # where the next export starts (tk-export: resume)
         self.schema = Schema(json.loads(Path(cfg.get("schema", SCHEMA)).read_text()))
         self.lock = asyncio.Lock()
+        self.ws = None  # the hub connection, while there is one (synthesis events)
+        self.synthesizing: set[tuple[str, str]] = set()  # (board key, nn) running now
+        self.synth_tasks: set[asyncio.Task] = set()  # runs started by a column move
+        self.agy_timeout = env_agy_timeout()  # the box's, over every board's policy
         self.rpcs = {
             "rescan_boards": self.rpc_rescan_boards,
             "set_archived": self.rpc_set_archived,
             "set_policy": self.rpc_set_policy,
+            "refine_with_comment": self.rpc_refine_with_comment,
+            "set_task_done": self.rpc_set_task_done,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -341,11 +437,14 @@ class Daemon:
                 ) from None
         try:
             snap, failed = await self.export()
+            if self.fail_interrupted(snap["boards"]):  # the hub sees them failed now
+                snap, failed = await self.export()
             boards = {b["key"]: b for b in snap["boards"]}
             for key in failed & self.sent.keys():
                 boards[key] = self.sent[key]
             removed = sorted(self.sent.keys() - boards.keys())
             held = sorted(failed - boards.keys())
+            moved = self.moves_to_synthesize(boards)
             want_full = full or self.need_full
             full = want_full and not held
             changed = [
@@ -380,6 +479,8 @@ class Daemon:
                 )
             self.sent, self.health = boards, snap["health"]
             self.need_full = want_full and not full
+            for key, nn in moved:
+                self.spawn_synthesis(key, nn)
             return len(boards), removed, held
         finally:
             self.lock.release()
@@ -408,16 +509,9 @@ class Daemon:
         if b is None:
             raise ValueError(f"no board {key} on this box")
         board = Path(b["board_path"])
-        meta_file = board / "hub-meta.json"
-        # Read-modify-write: safe only while this is the daemon's single writer
-        # (no awaits in between); a per-board lock is needed once another exists.
-        meta = json.loads(meta_file.read_text()) if meta_file.exists() else {}
-        if not isinstance(meta, dict):
-            raise ValueError(f"{meta_file} is not a JSON object")  # noqa: TRY004
+        meta = read_meta(board)
         meta["archived"] = flag
-        tmp = meta_file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(meta, indent=2) + "\n")
-        tmp.replace(meta_file)
+        write_meta(board, meta)
         return {
             "ok": True,
             "exit_code": 0,
@@ -437,11 +531,7 @@ class Daemon:
                 raise ValueError(
                     f"policy {k}={v!r} is not a writable board-override value"
                 )
-        tk = os.environ.get("TK_SH") or (
-            "tk.sh"
-            if shutil.which("tk.sh")
-            else str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
-        )
+        tk = tk_sh()
         # Each value as JSON, so tk.sh reads back the type it was sent (quoting keeps a
         # string a string even when it looks like JSON); None is `key=`, which removes
         # the board override.
@@ -450,6 +540,242 @@ class Daemon:
             [tk, "policy-set", board["board_path"], *args], cwd=board["root"]
         )
         return {"ok": code == 0, "exit_code": code, "output_tail": out + err}
+
+    def board_ticket(self, params: dict) -> tuple[dict, dict]:
+        """(board, ticket) named by params' board_key and nn, as last sent."""
+        key, nn = params.get("board_key"), params.get("nn")
+        board = self.sent.get(key) if isinstance(key, str) else None
+        if board is None:
+            raise ValueError(f"no board {key!r} on this box")
+        ticket = next((t for t in board["tickets"] if t["nn"] == nn), None)
+        if ticket is None:
+            raise ValueError(f"no ticket {nn!r} on board {key}")
+        return board, ticket
+
+    async def rpc_refine_with_comment(self, ws, params: dict) -> dict:
+        board, ticket = self.board_ticket(params)
+        comment = params.get("comment", "")
+        if not isinstance(comment, str):
+            raise ValueError("comment must be a string")  # noqa: TRY004
+        try:
+            result = await self.synthesize(board, ticket, comment)
+        except agy_runner.SynthesisFailed as e:
+            return {"ok": False, "exit_code": None, "output_tail": "",
+                    "reason": f"synthesis failed: {e}"}  # fmt: skip
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"{board['key']} #{ticket['nn']}: synthesized by {result.backend}",
+        }
+
+    async def rpc_set_task_done(self, ws, params: dict) -> dict:
+        board, ticket = self.board_ticket(params)
+        text, done = params.get("text"), params.get("done")
+        if not isinstance(text, str) or not isinstance(done, bool):
+            raise ValueError(f"bad set_task_done params: {params!r}")  # noqa: TRY004
+        path = Path(board["board_path"])
+        meta = read_meta(path)
+        entry = ticket_meta(meta, ticket["nn"])
+        try:
+            entry["manual_tasks"] = agy_runner.set_task_done(
+                entry.get("manual_tasks") or [], text, done
+            )
+        except KeyError:
+            raise ValueError(f"no checklist item {text!r} on #{ticket['nn']}") from None
+        write_meta(path, meta)
+        tick = "done" if done else "not done"
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"#{ticket['nn']} {text}: {tick}",
+        }
+
+    # ---- synthesis -----------------------------------------------------------------
+    def moves_to_synthesize(self, boards: dict) -> list[tuple[str, str]]:
+        """(key, nn) of each ticket whose col moved into needs/human/pr since the last
+        export; a board or ticket seen for the first time has not moved, an archived
+        board is left alone."""
+        moved = []
+        for key, b in boards.items():
+            old = self.sent.get(key)
+            if old is None or b["hub_meta"].get("archived"):
+                continue
+            before = {t["nn"]: t["col"] for t in old["tickets"]}
+            moved += [
+                (key, t["nn"])
+                for t in b["tickets"]
+                if t["col"] in SYNTHESIS_COLUMNS
+                and before.get(t["nn"], t["col"]) != t["col"]
+            ]
+        return moved
+
+    def fail_interrupted(self, boards: list[dict]) -> bool:
+        """Mark failed ("interrupted") each ticket of `boards` whose hub-meta still says
+        `running` with no run of this daemon behind it: one a killed daemon left.
+        True when any was."""
+        found = False
+        for b in boards:
+            for t in b["tickets"]:
+                if (t.get("synthesis_status") != "running"
+                        or (b["key"], t["nn"]) in self.synthesizing):  # fmt: skip
+                    continue
+                path = Path(b["board_path"])
+                try:
+                    meta = read_meta(path)
+                    entry = ticket_meta(meta, t["nn"])
+                    if entry.get("synthesis_status") != "running":
+                        continue  # a run finished since the export read it
+                    entry.update(synthesis_status="failed",
+                                 synthesis_error="interrupted")  # fmt: skip
+                    write_meta(path, meta)
+                except (OSError, ValueError) as e:
+                    log.warning("hub-meta of %s: %s", b["key"], e)
+                    continue
+                log.warning("synthesis of %s #%s was interrupted", b["key"], t["nn"])
+                found = True
+        return found
+
+    def spawn_synthesis(self, key: str, nn: str):
+        async def run():
+            board, ticket = self.board_ticket({"board_key": key, "nn": nn})
+            with contextlib.suppress(agy_runner.SynthesisFailed):
+                await self.synthesize(board, ticket, "")
+            if self.ws is not None:  # the hub sees the result now, not next tick
+                await self.sync(self.ws, full=False)
+
+        async def guarded():
+            try:
+                await run()
+            except Exception as e:  # noqa: BLE001 — logged; the next move tries again
+                log.warning("synthesis of %s #%s: %s: %s", key, nn, type(e).__name__, e)
+
+        task = asyncio.create_task(guarded())
+        self.synth_tasks.add(task)
+        task.add_done_callback(self.synth_tasks.discard)
+
+    async def send_event(self, kind: str, key: str, nn: str, backend, error=None):
+        """synthesis_started / _finished / _failed to the hub, which relays it to the UI;
+        dropped while there is no connection."""
+        msg = {"type": f"synthesis_{kind}", "board_key": key, "nn": nn,
+               "backend": backend if backend in agy_runner.DEFAULT_COMMANDS else None,
+               "at": utc_now()}  # fmt: skip
+        if error is not None:
+            msg["error"] = error[-TAIL:]
+        if errors := self.schema.errors(msg):
+            log.error("synthesis event fails the schema: %s", "; ".join(errors[:3]))
+            return
+        if (ws := self.ws) is not None:
+            with contextlib.suppress(Exception):
+                await ws.send(json.dumps(msg))
+
+    async def synthesis_context(
+        self, board: dict, ticket: dict, comment: str
+    ) -> agy_runner.SynthesisContext:
+        policy = synthesis_policy(board)
+        root = board["root"]
+        try:
+            code, out, _ = await asyncio.wait_for(
+                run_cmd([tk_sh(), "show", board["board_path"], ticket["nn"], SHOW_LINES],
+                        cwd=root),
+                self.cfg["export_call_timeout_s"],
+            )  # fmt: skip
+            pane = out if code == 0 else None
+        except (TimeoutError, OSError):
+            pane = None
+        report = None
+        branch = ticket.get("branch") or ""
+        if branch and ".." not in branch.split("/"):
+            state = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
+            reports = Path(state) / "ticket-skill" / board["repo"] / "reports"
+            report = read_file(reports / f"{branch}.md")
+        file = ticket.get("file") or ""
+        return agy_runner.SynthesisContext(
+            cwd=root,
+            ticket=f"{ticket['nn']}: {ticket['title']}",
+            ticket_md=read_file(Path(file)) if os.path.isabs(file) else None,
+            report_md=report,
+            pane=pane,
+            project_memory=read_file(Path(root) / "docs/agents/project-memory.md"),
+            comment=comment,
+            backends=synthesis_backends(policy),
+            timeout=self.agy_timeout or self.policy_timeout(board, policy),
+            commands=policy.get("commands")
+            if isinstance(policy.get("commands"), dict)
+            else {},
+        )
+
+    @staticmethod
+    def policy_timeout(board: dict, policy: dict) -> float:
+        """`synthesis.timeout`; the default when missing, or invalid (with a warning)."""
+        value = policy.get("timeout")
+        if value is None:
+            return agy_runner.DEFAULT_TIMEOUT
+        if (timeout := seconds(value)) is None:
+            log.warning("board %s: ignoring synthesis.timeout=%r: not a number of "
+                        "seconds > 0; using %ss", board["key"], value,
+                        agy_runner.DEFAULT_TIMEOUT)  # fmt: skip
+            return agy_runner.DEFAULT_TIMEOUT
+        return timeout
+
+    async def synthesize(
+        self, board: dict, ticket: dict, comment: str
+    ) -> agy_runner.SynthesisResult:
+        """One synthesis run on a ticket, into its board's hub-meta.json. Raises
+        SynthesisFailed (after recording it) when every backend failed."""
+        key, nn = board["key"], ticket["nn"]
+        if (key, nn) in self.synthesizing:
+            raise ValueError(f"synthesis of {key} #{nn} is already running")
+        path = Path(board["board_path"])
+        first = synthesis_backends(synthesis_policy(board))[0]
+        self.synthesizing.add((key, nn))
+        try:
+            before = read_meta(path)
+            update_ticket_meta(path, nn, {"synthesis_status": "running"})
+            await self.send_event("started", key, nn, first)
+            try:
+                ctx = await self.synthesis_context(board, ticket, comment)
+                result = await agy_runner.synthesize(ctx)
+            except asyncio.CancelledError:  # timed out as an RPC, or stopping
+                with contextlib.suppress(Exception):
+                    update_ticket_meta(path, nn, {"synthesis_status": "failed",
+                                                  "synthesis_error": "interrupted"})  # fmt: skip
+                # Best effort: the UI stops waiting.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        self.send_event("failed", key, nn, None, "interrupted"), 5
+                    )
+                raise
+            except Exception as e:
+                error = str(e)
+                update_ticket_meta(path, nn, {"synthesis_status": "failed",
+                                              "synthesis_error": error})  # fmt: skip
+                backend = (
+                    e.backend if isinstance(e, agy_runner.SynthesisFailed) else None
+                )
+                await self.send_event("failed", key, nn, backend, error)
+                raise
+            meta = read_meta(path)  # ticks made meanwhile are kept
+            entry = ticket_meta(meta, nn)
+            entry.update(
+                summary=result.summary,
+                reviewer_notes=result.reviewer_notes,
+                full_report_md=result.full_report_md,
+                manual_tasks=agy_runner.merge_tasks(
+                    [t for t in entry.get("manual_tasks") or []
+                     if isinstance(t, dict) and isinstance(t.get("text"), str)],
+                    result.manual_tasks,
+                ),
+                new_memory_rule=result.new_memory_rule,
+                synthesis_backend=result.backend,
+                synthesis_status="ok",
+                synthesis_error=None,
+            )  # fmt: skip
+            write_meta(path, before, "hub-meta.prev.json")
+            write_meta(path, meta)
+            await self.send_event("finished", key, nn, result.backend)
+            return result
+        finally:
+            self.synthesizing.discard((key, nn))
 
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")
@@ -559,6 +885,7 @@ class Daemon:
                 raise RuntimeError(f"expected welcome, got {reply.get('type')!r}")
             log.info("connected to %s via %s", self.name, self.cfg["ip"])
             on_welcome()
+            self.ws = ws  # cleared when serve() ends
             self.need_full = True
             try:
                 await self.sync(ws, full=True)
@@ -601,6 +928,8 @@ class Daemon:
                 else:
                     log.warning("ignoring hub message of type %r", msg.get("type"))
         finally:
+            if self.ws is ws:
+                self.ws = None
             ticker.cancel()
             for task in rpcs:
                 task.cancel()

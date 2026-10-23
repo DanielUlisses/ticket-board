@@ -1,5 +1,6 @@
 """Shared test scaffolding: a fake box (HOME, ~/work repos with boards) and fake
-`tk.sh`, `herdr` and `op` on PATH (tests/fakes)."""
+`tk.sh`, `herdr`, `op` and the synthesis CLIs `agy`, `cursor-agent`, `claude` on
+PATH (tests/fakes)."""
 
 import json
 import os
@@ -45,12 +46,16 @@ class Box:
         self.work = self.home / "work"
         self.bin = tmp / "bin"
         self.tk_log = tmp / "tk.log"
+        self.synth_log = tmp / "synth.log"
         self.bin.mkdir(parents=True)
         self.work.mkdir(parents=True)
         for src, name in [
             ("tk_sh.py", "tk.sh"),
             ("herdr.py", "herdr"),
             ("op.py", "op"),
+            ("synth_cli.py", "agy"),
+            ("synth_cli.py", "cursor-agent"),
+            ("synth_cli.py", "claude"),
         ]:
             dst = self.bin / name
             shutil.copy(FAKES / src, dst)
@@ -61,8 +66,10 @@ class Box:
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "TK_DEVBOX": "dev-test",
             "FAKE_TK_LOG": str(self.tk_log),
+            "FAKE_SYNTH_LOG": str(self.synth_log),
         }
         self.env.pop("TK_SCAN_GLOB", None)
+        self.env.pop("XDG_STATE_HOME", None)
 
     def repo(self, name: str, worktree: bool = False) -> Path:
         root = self.work / name
@@ -89,6 +96,11 @@ class Box:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content if isinstance(content, str) else json.dumps(content))
         return p
+
+    def synth_calls(self) -> list[dict]:
+        if not self.synth_log.exists():
+            return []
+        return [json.loads(line) for line in self.synth_log.read_text().splitlines()]
 
     def tk_calls(self) -> list[dict]:
         if not self.tk_log.exists():

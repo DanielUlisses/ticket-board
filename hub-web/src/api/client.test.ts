@@ -235,3 +235,32 @@ describe("setArchived", () => {
     });
   });
 });
+
+describe("refine and setTaskDone", () => {
+  it("refine POSTs {comment} to the ticket's comment route", async () => {
+    const { fetch, client } = setup();
+    expect(await client.refine("dev box/repo/b", "01", "Mention the cap.")).toBe(true);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("https://tk-hub.example.ts.net/api/boards/dev%20box/repo/b/tickets/01/comment");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({ comment: "Mention the cap." });
+  });
+
+  it("setTaskDone POSTs {text, done} to the ticket's tasks route", async () => {
+    const { fetch, client } = setup();
+    expect(await client.setTaskDone("a/b/c", "07", "Tick a box", true)).toBe(true);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("https://tk-hub.example.ts.net/api/boards/a/b/c/tickets/07/tasks");
+    expect(JSON.parse(init?.body as string)).toEqual({ text: "Tick a box", done: true });
+  });
+
+  it("both toast the hub's error and return false", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ detail: "devbox dev-x is offline" }, 409));
+    expect(await client.refine("a/b/c", "01", "")).toBe(false);
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("offline") });
+    fetch.mockImplementationOnce(() => json({ detail: "no ticket" }, 404));
+    expect(await client.setTaskDone("a/b/c", "01", "x", true)).toBe(false);
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("no ticket") });
+  });
+});

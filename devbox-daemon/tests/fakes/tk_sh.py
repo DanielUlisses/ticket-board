@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Fake ticket-skill tk.sh: `boards`, `export <path>`, `policy <path>`, `help`, with
+"""Fake ticket-skill tk.sh: `boards`, `export <path>`, `policy <path>`, `show <path> <NN>
+<lines>`, `help`, with
 the real verbs' output shape. Each call is appended to $FAKE_TK_LOG as
 {"argv", "cwd", "pid"}. A board's rows come from <board>/rows.json; a board holding
 `export-fails` fails its export, one holding `export-slow` (seconds) is slow to
 export, one holding `export-stubborn` (seconds) is as slow and ignores SIGTERM.
-`<repo>/.scratch/boards-out` replaces what `boards` prints. $FAKE_TK_HELP_FAILS
+`<repo>/.scratch/boards-out` replaces what `boards` prints. `show` prints the board's
+`show-<NN>.txt`, else a canned line; `show-fails` makes it fail. $FAKE_TK_HELP_FAILS
 makes `help` fail; $FAKE_TK_HELP_PROSE adds prose naming policy files to it.
 The `policy` verb exists (and `help` lists it) only when $FAKE_TK_POLICY is set:
 then `resolved-policy.json` answers it and `policy-fails` makes it fail; `policy-set` then
@@ -82,6 +84,12 @@ elif verb == "export":
             }
         )
     )
+elif verb == "show":
+    board, nn = Path(args[1]), args[2]
+    if (board / "show-fails").exists():
+        sys.exit("ERROR: herdr is down")
+    f = board / f"show-{nn}.txt"
+    print(f.read_text() if f.exists() else f"tk show {nn}: the agent pane tail")
 elif verb == "policy" and has_policy:
     board = Path(args[1])
     if (board / "policy-fails").exists():
