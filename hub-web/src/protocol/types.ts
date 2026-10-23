@@ -141,12 +141,24 @@ export interface Usage {
   updated_at: Timestamp | null;
 }
 
+/** `$defs/sync_result`: the last `devbox sync` a box started; exit_code null while it runs. */
+export interface SyncResult {
+  started_at: Timestamp;
+  finished_at?: Timestamp | null;
+  exit_code: number | null;
+  /** No exit code and its unit is gone: killed or rebooted mid-sync. */
+  interrupted?: boolean;
+  log_path: string;
+  log_tail: string;
+}
+
 /** `$defs/health` (subset). */
 export interface Health {
   daemon_version: string;
   herdr: { ok: boolean; status: string };
   usage?: Usage;
   running: number;
+  last_sync?: SyncResult | null;
 }
 
 /** A devbox as the UI knows it: `devbox_status` without its `type`. */

@@ -240,6 +240,17 @@ describe("setArchived", () => {
   });
 });
 
+describe("syncBox", () => {
+  it("POSTs {force} to the devbox's sync route and toasts ok", async () => {
+    const { store, fetch, client } = setup();
+    await client.syncBox("dev box", true);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("https://tk-hub.example.ts.net/api/devboxes/dev%20box/sync");
+    expect(JSON.parse(init?.body as string)).toEqual({ force: true });
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "ok" });
+  });
+});
+
 describe("refine and setTaskDone", () => {
   it("refine POSTs {comment} to the ticket's comment route", async () => {
     const { fetch, client } = setup();
