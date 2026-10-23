@@ -1,14 +1,46 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HubClient } from "../api/client";
 import { COLUMN_META } from "../columns";
-import type { ActivityEvent, Board, Ticket } from "../protocol/types";
+import type { ActivityEvent, Board, Column, Ticket } from "../protocol/types";
 import { Glyph } from "./Glyph";
+import { LaunchControl } from "./LaunchControl";
+import { PaneTail } from "./PaneTail";
+import { Relay } from "./Relay";
 import { ReportModal } from "./ReportModal";
 import { useStore, useView } from "./StoreContext";
 import styles from "./TicketSheet.module.css";
 
+export { PANE_MS } from "./PaneTail";
+
 /** The hub calls the sheet makes. */
-export type DetailApi = Pick<HubClient, "activity" | "report" | "refine" | "setTaskDone">;
+export type DetailApi = Pick<HubClient, "activity" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone">;
+
+/** Columns where the ticket has an agent: relay to it, tail its pane. */
+const WITH_AGENT: ReadonlySet<Column> = new Set(["needs", "working", "review", "human"]);
+
+/** The footer's actions by column: ▶ Launch on backlog, the relay (↵ Send, primary on needs) where there is an agent. */
+function Actions({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
+  const { pending } = useView();
+  const waiting = (method: string) =>
+    pending.some((p) => p.method === method && p.board_key === board.key && p.nn === ticket.nn);
+  if (ticket.col === "backlog")
+    return (
+      <LaunchControl
+        ticket={ticket}
+        pending={waiting("launch_ticket")}
+        onLaunch={(s) => void api.launch(board.key, ticket.nn, s)}
+      />
+    );
+  if (WITH_AGENT.has(ticket.col))
+    return (
+      <Relay
+        primary={ticket.col === "needs"}
+        pending={waiting("say_agent")}
+        onSend={(message) => api.say(board.key, ticket.nn, message)}
+      />
+    );
+  return null;
+}
 
 /**
  * After ✦ Update, how long the spinner waits for the run to start (synthesis_started
@@ -34,6 +66,38 @@ function memoryItems(md: string | null): string[] {
     .split("\n")
     .map((l) => /^\s*(?:[-*]|\d+\.)\s+(.*\S)\s*$/.exec(l)?.[1])
     .filter((x): x is string => !!x);
+}
+
+/** "Propose to memory": prefilled from synthesis, editable; sends a ticket, never edits the file. */
+function ProposeMemory({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
+  const [typed, setTyped] = useState<string | null>(null); // null until the developer edits
+  const text = typed ?? ticket.new_memory_rule ?? "";
+  const setText = setTyped;
+  const [busy, setBusy] = useState(false);
+  const send = () => {
+    setBusy(true);
+    void api.proposeMemory(board.key, text.trim()).then((ok) => {
+      setBusy(false);
+      if (ok) setTyped(""); // sent: the prefill is spent too
+    });
+  };
+  return (
+    <div>
+      <label className={styles.h} htmlFor="propose-memory">
+        Propose to memory
+      </label>
+      <textarea
+        id="propose-memory"
+        rows={2}
+        value={text}
+        placeholder="A rule for docs/agents/project-memory.md"
+        onChange={(e) => setText(e.target.value)}
+      />
+      <button type="button" className={styles.action} disabled={busy || !text.trim()} onClick={send}>
+        Propose to memory
+      </button>
+    </div>
+  );
 }
 
 function Timeline({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
@@ -265,6 +329,7 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
                 <span className={styles.tag}>Suggested</span> {ticket.new_memory_rule}
               </p>
             )}
+            <ProposeMemory board={board} ticket={ticket} api={api} />
           </section>
 
           <section className={styles.card} aria-label="Activity">
@@ -274,11 +339,17 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
 
           <section className={styles.card} aria-label="Agent pane">
             <h3 className={styles.h}>Agent pane</h3>
-            <p className={styles.muted}>Live pane tail arrives with the pane-tail RPC.</p>
+            {WITH_AGENT.has(ticket.col) ? (
+              <PaneTail boardKey={board.key} nn={ticket.nn} poll={api.paneTail} />
+            ) : (
+              <p className={styles.muted}>No agent running.</p>
+            )}
           </section>
         </div>
 
-        <footer className={styles.foot} aria-label="Actions" />
+        <footer className={styles.foot} aria-label="Actions">
+          <Actions board={board} ticket={ticket} api={api} />
+        </footer>
       </div>
       {report && (
         <ReportModal boardKey={board.key} nn={ticket.nn} load={loadReport} onClose={() => setReport(false)} />

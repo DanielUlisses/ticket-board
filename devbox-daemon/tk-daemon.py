@@ -15,7 +15,9 @@ Reconnects with exponential backoff and jitter.
    optional: "devbox" (default: short hostname), "export_interval_s" (20),
    "backoff_initial_s" (1), "backoff_max_s" (60), "rpc_timeout_s" (120),
    "rpc_synthesis_timeout_s" (600), "hello_timeout_s" (30), "export_timeout_s" (60),
-   "export_call_timeout_s" (30), "schema" (../protocol/schema.json)}
+   "export_call_timeout_s" (30), "launch_lock_wait_s" (5), "launch_timeout_s" (900),
+   "reservation_ttl_s" (120), "shutdown_grace_s" (60),
+   "schema" (../protocol/schema.json)}
 Health and every board are checked against the schema before sending: a board
 that fails it is failed (keeps its last copy), never sent.
 export_call_timeout_s bounds each tk.sh / herdr call inside tk-export.sh (a hung
@@ -27,7 +29,29 @@ the last health it knew (or herdr not ok, usage unknown), and sends the full
 snapshot as soon as an export succeeds.
 rescan_boards waits for an export already running at most rpc_timeout_s -
 export_timeout_s, so it has time for its own.
-The box policy, ~/.config/tk-daemon/policy.json, is read by tk-export.sh.
+The box policy, ~/.config/tk-daemon/policy.json, is read by tk-export.sh, and
+here for its max_parallel (5).
+RPCs: rescan_boards; launch_ticket, say_agent, pane_tail run tk.sh launch / say
+/ show with the board's main checkout as cwd. An RPC whose params fail the
+schema runs nothing. launch_ticket is refused while `herdr status server` is not
+running, and, unless manual, when the box already runs max_parallel tickets
+(working/review, plus launches not yet exported); a manual launch past the cap
+goes, flagged in data.over_cap. The daemon's own launches on one board run one
+after the other (an in-process lock per board: ▶ Frontier sends them all at
+once), each in a task of its own that rpc_timeout_s does not cancel. In turn, a
+launch takes the board's flock (<board>/.board.lock), waiting at most
+launch_lock_wait_s for another process holding it (else refused "board busy",
+nothing run), re-checks with tk.sh export (bounded by export_call_timeout_s)
+that the ticket is still backlog, and runs tk.sh launch under launch_timeout_s
+only (a launch killed midway leaves a worktree and agent with no run recorded).
+A launch that outlives rpc_timeout_s, queued or running, is reported to the hub
+as "timed out" yet carries on: its outcome is logged at warning level and the
+re-export after the next RPC or tick shows it. ticket-skill's tk.sh does not
+take the flock, so a board's own session is not kept out. A launch holds a slot
+against max_parallel until an export shows the ticket out of backlog, or
+reservation_ttl_s after tk.sh launch returned. say_agent's message goes through
+a temp file; tk.sh exit 20 (at a dialog) and 21 (no agent) come back as reasons. pane_tail returns the lines in
+data.pane and, being read-only, is not followed by a re-export.
 Synthesis (agy_runner.py): a ticket that moves into needs, human or pr between two
 exports (never one seen for the first time), and refine_with_comment, run the board's
 `synthesis.backends` on the ticket; the result lands in the board's hub-meta.json
@@ -38,11 +62,15 @@ A `running` status with no run behind it (the daemon was killed) becomes failed,
 "interrupted", at the next export. TK_AGY_TIMEOUT (seconds > 0, read at start)
 overrides `synthesis.timeout`; an invalid value of either is ignored with a warning.
 SIGTERM / SIGINT stop the daemon (closing the connection with 1001) and kill a
-running export.
+running export; launches still queued then refuse ("daemon stopping") without
+running tk.sh, and those already in it get shutdown_grace_s to finish before
+they are killed, so systemd's TimeoutStopSec must exceed it (the default 90 s
+does, for the default 60 s).
 """
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import logging
 import math
@@ -53,6 +81,7 @@ import shutil
 import signal
 import socket
 import sys
+import tempfile
 import time
 import typing
 from pathlib import Path
@@ -76,6 +105,10 @@ DEFAULTS = {
     "hello_timeout_s": 30,
     "export_timeout_s": 60,
     "export_call_timeout_s": 30,
+    "launch_lock_wait_s": 5,
+    "launch_timeout_s": 900,
+    "reservation_ttl_s": 120,
+    "shutdown_grace_s": 60,
 }
 # The board-override keys set_policy may write, mirroring tk.sh's POLICY_CHECK; box-level
 # keys (max_parallel, usage_gate_pct, synthesis) are not among them.
@@ -92,12 +125,35 @@ SHOW_LINES = "180"  # tk.sh show <board> <NN> 180, part of the synthesis context
 FAILED = re.compile(r"^tk-export: failed (\S+)(?: (/.*))?$", re.MULTILINE)
 RESUME = re.compile(r"^tk-export: resume ([0-9]+)$", re.MULTILINE)
 TAIL = 4000  # characters of output_tail
+PANE = 200_000  # characters of a pane_tail's data.pane
+# RPCs that change nothing: no re-export after them (pane_tail is polled).
+READ_ONLY_RPCS = frozenset({"rescan_boards", "pane_tail"})
+MAX_PARALLEL = 5  # running tickets per box, unless the box policy says otherwise
+RUNNING = ("working", "review")  # as tk-export.sh counts health.running
+# tk.sh say / show exit codes, as the UI shows them.
+AGENT_EXITS = {
+    20: "dialog: the agent is at a dialog or not at its prompt; answer it in its herdr tab",
+    21: "no agent: the ticket's agent isn't running",
+}
 
 log = logging.getLogger("tk-daemon")
 
 
 class Refused(Exception):
     pass
+
+
+class RpcRefused(Exception):
+    """An RPC the daemon will not run: reported as ok false, exit_code null."""
+
+
+def tk_sh() -> str:
+    """tk.sh as tk-export.sh finds it: $TK_SH, tk.sh on PATH, the installed skill's."""
+    if os.environ.get("TK_SH"):
+        return os.environ["TK_SH"]
+    if shutil.which("tk.sh"):
+        return "tk.sh"
+    return str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
 
 
 class Schema:
@@ -225,6 +281,43 @@ def endpoint(url: str) -> tuple[str, str, int]:
     return f"wss://{u.hostname}:{port}{path}", u.hostname, port
 
 
+def kill_session(sid: int):
+    """SIGKILL every process in session `sid`: its process group, and the groups
+    `timeout` makes for the calls it runs (Linux /proc)."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(sid, signal.SIGKILL)
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        with contextlib.suppress(OSError):  # gone meanwhile, or not ours
+            if os.getsid(int(name)) == sid:
+                os.kill(int(name), signal.SIGKILL)
+
+
+async def board_lock(board_path: str, wait: float) -> typing.IO:
+    """flock on <board>/.board.lock, taken within `wait` seconds or refused as
+    board busy; closing the returned file releases it. Only drivers that take it
+    are serialised: the daemon's own launches. ticket-skill's tk.sh never takes
+    it, so a board's own session is not kept out (the re-check under the lock
+    narrows that race, it does not close it)."""
+    f = open(Path(board_path) / ".board.lock", "a")  # noqa: ASYNC230, SIM115
+    deadline = time.monotonic() + wait
+    try:
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return f
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RpcRefused(
+                        f"board busy: another launch holds {f.name} past {wait:g}s"
+                    ) from None
+                await asyncio.sleep(0.1)
+    except BaseException:
+        f.close()
+        raise
+
+
 async def run_cmd(
     argv: list[str], env: dict | None = None, cwd: str | None = None
 ) -> tuple[int, str, str]:
@@ -246,15 +339,6 @@ async def run_cmd(
         await proc.wait()
         raise
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
-
-
-def tk_sh() -> str:
-    """tk.sh: $TK_SH, else on PATH, else the installed skill's (as tk-export.sh)."""
-    return os.environ.get("TK_SH") or (
-        "tk.sh"
-        if shutil.which("tk.sh")
-        else str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
-    )
 
 
 def utc_now() -> str:
@@ -352,12 +436,25 @@ class Daemon:
         self.synthesizing: set[tuple[str, str]] = set()  # (board key, nn) running now
         self.synth_tasks: set[asyncio.Task] = set()  # runs started by a column move
         self.agy_timeout = env_agy_timeout()  # the box's, over every board's policy
+        # Launches take a slot under launch_lock, before tk.sh runs; the slot is
+        # held (reserved) until a snapshot shows the ticket out of backlog, or
+        # reservation_ttl_s after tk.sh launch returned.
+        self.launch_lock = asyncio.Lock()
+        # (board key, nn) -> monotonic time tk.sh launch returned; None: running
+        self.reserved: dict[tuple[str, str], float | None] = {}
+        self.launches: set[asyncio.Task] = set()  # launches running, for shutdown
+        self.board_locks: dict[str, asyncio.Lock] = {}  # one launch per board at once
+        self.stopping = False  # set on SIGTERM / SIGINT: queued launches never start
         self.rpcs = {
             "rescan_boards": self.rpc_rescan_boards,
+            "launch_ticket": self.rpc_launch_ticket,
+            "say_agent": self.rpc_say_agent,
+            "pane_tail": self.rpc_pane_tail,
             "set_archived": self.rpc_set_archived,
             "set_policy": self.rpc_set_policy,
             "refine_with_comment": self.rpc_refine_with_comment,
             "set_task_done": self.rpc_set_task_done,
+            "propose_memory": self.rpc_propose_memory,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -478,6 +575,7 @@ class Daemon:
                     "full snapshot held back: no copy of failed %s", " ".join(held)
                 )
             self.sent, self.health = boards, snap["health"]
+            self.expire_reservations()
             self.need_full = want_full and not full
             for key, nn in moved:
                 self.spawn_synthesis(key, nn)
@@ -500,6 +598,224 @@ class Daemon:
                 f"; sent as a delta, not full: no copy yet of failed {' '.join(held)}"
             )
         return {"ok": True, "exit_code": 0, "output_tail": tail}
+
+    def board(self, params: dict) -> dict:
+        """The board an RPC names, as last exported."""
+        board = self.sent.get(params.get("board_key"))
+        if board is None:
+            raise RpcRefused(f"unknown board {params.get('board_key')!r} on this box")
+        return board
+
+    async def tk(self, board: dict, *args: str) -> tuple[int, str]:
+        """tk.sh <verb> <board path> ... from the board's main checkout: (exit, output)."""
+        verb, *rest = args
+        rc, out, err = await run_cmd(
+            [tk_sh(), verb, board["board_path"], *rest], cwd=board["root"]
+        )
+        return rc, out + err
+
+    async def col(self, board: dict, nn: str) -> str:
+        """The ticket's column now: `tk.sh export`, not the last snapshot; bounded
+        by export_call_timeout_s, as tk-export.sh bounds it."""
+        limit = self.cfg["export_call_timeout_s"]
+        try:
+            rc, out, err = await asyncio.wait_for(
+                run_cmd([tk_sh(), "export", board["board_path"]], cwd=board["root"]),
+                limit,
+            )
+        except TimeoutError:
+            raise RpcRefused(f"tk.sh export timed out after {limit:g}s") from None
+        if rc != 0:
+            raise RpcRefused(f"tk.sh export failed (exit {rc}): {err.strip()[-200:]}")
+        tickets = json.loads(out).get("tickets") or []
+        found = next((t for t in tickets if t.get("nn") == nn), None)
+        if found is None:
+            raise RpcRefused(f"no ticket {nn} on board {board['key']}")
+        return found.get("col")
+
+    def col_sent(self, key: str, nn: str) -> str | None:
+        tickets = self.sent.get(key, {}).get("tickets") or []
+        return next((t.get("col") for t in tickets if t.get("nn") == nn), None)
+
+    def expire_reservations(self):
+        """Drop the slots whose ticket the last export shows out of backlog, and
+        those whose tk.sh launch returned over reservation_ttl_s ago (a ticket
+        that never left backlog must not hold a slot forever). A ticket missing
+        from the export (its board failed, say) keeps its slot until the TTL."""
+        now, ttl = time.monotonic(), self.cfg["reservation_ttl_s"]
+        self.reserved = {
+            slot: t
+            for slot, t in self.reserved.items()
+            if self.col_sent(*slot) in ("backlog", None)
+            and (t is None or now - t < ttl)
+        }
+
+    def running(self) -> int:
+        """Tickets running on the box: working or review in the last export, plus
+        launches not yet seen out of backlog."""
+        busy = {
+            (key, t.get("nn"))
+            for key, b in self.sent.items()
+            for t in b.get("tickets") or []
+            if t.get("col") in RUNNING
+        }
+        self.expire_reservations()
+        return len(busy | self.reserved.keys())
+
+    def max_parallel(self) -> int:
+        """max_parallel from the box policy, ~/.config/tk-daemon/policy.json (5)."""
+        path = Path.home() / ".config" / "tk-daemon" / "policy.json"
+        try:
+            cap = json.loads(path.read_text()).get("max_parallel", MAX_PARALLEL)
+        except FileNotFoundError:
+            return MAX_PARALLEL
+        except (OSError, ValueError, AttributeError) as e:
+            log.warning("ignoring %s: %s", path, e)
+            return MAX_PARALLEL
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 0:
+            log.warning("ignoring max_parallel %r in %s", cap, path)
+            return MAX_PARALLEL
+        return cap
+
+    async def herdr_up(self):
+        """`herdr status server`, asked now: no launches while herdr is down."""
+        try:
+            rc, out, err = await asyncio.wait_for(
+                run_cmd(["herdr", "status", "server"]),
+                self.cfg["export_call_timeout_s"],
+            )
+        except TimeoutError:
+            raise RpcRefused("herdr is down: herdr status server timed out") from None
+        except OSError as e:
+            raise RpcRefused(f"herdr is down: {e}") from None
+        if rc != 0 or not re.search(r"^status: running", out, re.MULTILINE):
+            why = (err or out).strip().splitlines()
+            raise RpcRefused(f"herdr is down: {why[-1] if why else f'exit {rc}'}")
+
+    async def rpc_launch_ticket(self, ws, params: dict) -> dict:
+        """tk.sh launch, refused while herdr is down and, unless `manual`, at the
+        box's max_parallel; a manual launch past it goes, flagged as over_cap."""
+        board, nn = self.board(params), params["nn"]
+        slot = (board["key"], nn)
+        await self.herdr_up()
+        async with self.launch_lock:
+            self.expire_reservations()
+            if slot in self.reserved:
+                raise RpcRefused(f"ticket {nn} is already launching")
+            running, cap = self.running(), self.max_parallel()
+            over = running >= cap
+            if over and not params.get("manual"):
+                raise RpcRefused(
+                    f"the box is at max_parallel: {running} running, cap {cap}"
+                )
+            self.reserved[slot] = None
+        # The queue, the locks, the re-check and tk.sh launch run in a task of
+        # their own: the rpc timeout answers the hub but never cancels a launch
+        # waiting its turn or running.
+        task = asyncio.create_task(self.launch_locked(board, nn, params))
+        self.launches.add(task)
+        task.add_done_callback(self.launches.discard)
+        try:
+            rc, out = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            log.warning("launch %s %s outlived its rpc; it carries on", *slot)
+            task.add_done_callback(lambda t: self.log_orphan(slot, t))
+            raise
+        result = {"ok": rc in (0, 3), "exit_code": rc, "output_tail": out}
+        if over:
+            result["data"] = {"over_cap": True, "running": running, "max_parallel": cap}
+        return result
+
+    @staticmethod
+    def log_orphan(slot: tuple[str, str], task: asyncio.Task):
+        """The outcome of a launch whose rpc already answered (timed out)."""
+        if task.cancelled():
+            log.warning("launch %s %s cancelled after its rpc", *slot)
+        elif (e := task.exception()) is not None:
+            log.warning("launch %s %s failed after its rpc: %s", *slot, e)
+        else:
+            rc, out = task.result()
+            tail = out.strip().splitlines()
+            log.warning(
+                "launch %s %s finished after its rpc: exit %s%s",
+                *slot, rc, f" ({tail[-1]})" if tail else "",
+            )  # fmt: skip
+
+    async def launch_locked(
+        self, board: dict, nn: str, params: dict
+    ) -> tuple[int, str]:
+        """After the board's earlier launches by this daemon, under its flock:
+        re-check the ticket is backlog, tk.sh launch (bounded by
+        launch_timeout_s). Frees the slot unless the launch went, else starts its
+        reservation_ttl_s."""
+        slot, launched = (board["key"], nn), False
+        queue = self.board_locks.setdefault(board["key"], asyncio.Lock())
+        lock, queued = None, False
+        try:
+            await queue.acquire()
+            queued = True
+            if self.stopping:  # its turn came during shutdown: don't start one
+                raise RpcRefused("daemon stopping")
+            lock = await board_lock(board["board_path"], self.cfg["launch_lock_wait_s"])
+            if self.stopping:  # the stop came while it waited on an outside flock
+                raise RpcRefused("daemon stopping")
+            if (col := await self.col(board, nn)) != "backlog":
+                raise RpcRefused(f"ticket {nn} is {col}, not backlog")
+            limit = self.cfg["launch_timeout_s"]
+            try:
+                rc, out = await asyncio.wait_for(
+                    self.tk(
+                        board, "launch", nn, "--type", params["type"],
+                        "--model", params["model"], "--effort", params["effort"],
+                    ),
+                    limit,
+                )  # fmt: skip
+            except TimeoutError:
+                raise RpcRefused(f"tk.sh launch timed out after {limit:g}s") from None
+            launched = rc in (0, 3)
+            return rc, out
+        finally:
+            if lock is not None:
+                lock.close()
+            if queued:
+                queue.release()
+            if launched:
+                self.reserved[slot] = time.monotonic()
+            else:
+                self.reserved.pop(slot, None)
+
+    async def rpc_say_agent(self, ws, params: dict) -> dict:
+        """tk.sh say, the message passed as a file (deleted after)."""
+        board = self.board(params)
+        fd, path = tempfile.mkstemp(prefix="tk-say-", suffix=".md")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(params["message"])
+            rc, out = await self.tk(board, "say", params["nn"], path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        result = {"ok": rc == 0, "exit_code": rc, "output_tail": out}
+        if rc in AGENT_EXITS:
+            result["reason"] = AGENT_EXITS[rc]
+        return result
+
+    async def rpc_pane_tail(self, ws, params: dict) -> dict:
+        """tk.sh show <lines>: the agent's recent output (its stdout only) in
+        data.pane; on failure, stdout and stderr in output_tail."""
+        board = self.board(params)
+        rc, out, err = await run_cmd(
+            [tk_sh(), "show", board["board_path"], params["nn"],
+             str(int(params["lines"]))],
+            cwd=board["root"],
+        )  # fmt: skip
+        if rc == 0:
+            return {"ok": True, "exit_code": 0, "output_tail": err,
+                    "data": {"pane": out[-PANE:]}}  # fmt: skip
+        result = {"ok": False, "exit_code": rc, "output_tail": out + err}
+        if rc in AGENT_EXITS:
+            result["reason"] = AGENT_EXITS[rc]
+        return result
 
     async def rpc_set_archived(self, ws, params: dict) -> dict:
         key, flag = params.get("board_key"), params.get("archived")
@@ -777,18 +1093,105 @@ class Daemon:
         finally:
             self.synthesizing.discard((key, nn))
 
+    async def rpc_propose_memory(self, ws, params: dict) -> dict:
+        """Project memory only changes through a ticket: append the next-numbered
+        ticket to the board asking for the rule; it then flows through the normal
+        scheduler and merge gate. Nothing here writes project-memory.md."""
+        b = self.sent.get(params.get("board_key"))
+        text = params.get("text")
+        if b is None:
+            raise ValueError(f"no board {params.get('board_key')!r} on this box")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("empty memory rule")
+        text = text.strip()
+        rule = " ".join(text.split())
+        short = rule if len(rule) <= 72 else rule[:71].rstrip() + "…"
+        board = Path(b["board_path"])
+        if not board.is_dir():
+            raise ValueError(
+                f"{board} is not a directory: single-file boards are unsupported"
+            )
+        # NN is one sequence across every repo of the feature: the boards sharing
+        # this board_id on this box, and each repo path listed in <board>/repos.
+        dirs = {board / "issues"}
+        nums: list[int] = []
+        for other in self.sent.values():
+            if other.get("board_id") == b["board_id"]:
+                dirs.add(Path(other["board_path"]) / "issues")
+                nums += [
+                    int(t["nn"])
+                    for t in other.get("tickets", [])
+                    if str(t.get("nn")).isdigit()
+                ]
+        repos = board / "repos"
+        if repos.is_file():
+            for line in repos.read_text().splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    dirs.add(
+                        Path(parts[1].strip()) / ".scratch" / b["board_id"] / "issues"
+                    )
+        for d in dirs:
+            nums += [
+                int(m.group(1))
+                for f in d.glob("*.md")
+                if (m := re.match(r"(\d+)", f.name))
+            ]
+        n = max(nums, default=0) + 1
+        slug = re.sub(r"[^a-z0-9]+", "-", f"project memory {short}".lower())[:60]
+        slug = slug.strip("-")
+        issues = board / "issues"
+        issues.mkdir(exist_ok=True)
+        quoted = text.replace("\n", "\n> ")
+        while True:
+            nn = f"{n:02d}"
+            path = issues / f"{nn}-{slug}.md"
+            try:
+                fh = path.open("x")  # exclusive: never overwrite a ticket
+            except FileExistsError:
+                n += 1
+                continue
+            break
+        with fh:
+            fh.write(
+                f"# {nn}: Project memory — {short}\n\n"
+                "**What to build:** Add this rule to `docs/agents/project-memory.md` in "
+                "that file's voice (match its existing style and numbering), and prune "
+                "any line this makes stale or redundant. Change nothing else.\n\n"
+                f"> {quoted}\n\n"
+                f"**Repo:** {b['repo']} — {b['root']}\n"
+                "**Blocked by:** None\n"
+                "**Seams under test:** None — docs only\n"
+                "**Suggested model:** sonnet\n"
+                "**Suggested effort:** low\n\n"
+                "- [ ] the rule is in `docs/agents/project-memory.md`, in the file's voice\n"
+                "- [ ] stale or duplicate lines are pruned\n"
+            )
+        return {"ok": True, "exit_code": 0, "output_tail": f"wrote {path}"}
+
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")
         if not isinstance(rid, str) or not 1 <= len(rid) <= 128:
             log.warning("rpc without a usable id dropped (method %r)", method)
             return
         handler = self.rpcs.get(method)
+        invalid = handler and self.schema.errors(
+            {**msg, "params": msg.get("params") or {}}
+        )
         if handler is None:
             result = {
                 "ok": False,
                 "exit_code": None,
                 "output_tail": "",
                 "reason": f"unknown rpc {method!r}: this daemon runs {', '.join(sorted(self.rpcs))}",
+            }
+        elif invalid:  # nothing runs on params the schema rejects (argv safety)
+            handler = None  # and nothing to re-export after
+            result = {
+                "ok": False,
+                "exit_code": None,
+                "output_tail": "",
+                "reason": f"invalid params: {'; '.join(invalid[:3])}",
             }
         else:
             timeout = self.cfg[
@@ -807,6 +1210,13 @@ class Daemon:
                     "output_tail": "",
                     "reason": f"timed out after {timeout:g}s",
                 }
+            except RpcRefused as e:
+                result = {
+                    "ok": False,
+                    "exit_code": None,
+                    "output_tail": "",
+                    "reason": str(e),
+                }
             except Exception as e:  # reported to the hub, not raised
                 log.exception("rpc %s %s failed", rid, method)
                 result = {
@@ -818,7 +1228,7 @@ class Daemon:
         result["output_tail"] = result["output_tail"][-TAIL:]
         log.info("rpc %s %s -> ok=%s", rid, method, result["ok"])
         await ws.send(json.dumps({"type": "rpc_result", "id": rid, **result}))
-        if handler is not None and method != "rescan_boards":
+        if handler is not None and method not in READ_ONLY_RPCS:
             await self.sync(ws, full=False)  # re-export right after each RPC
 
     async def guarded_rpc(self, ws, msg: dict):
@@ -993,13 +1403,26 @@ def main() -> int:
 
 async def run(daemon: Daemon):
     """Run until SIGTERM / SIGINT, which cancel the daemon so a running export's
-    processes are killed (run_cmd) before it exits."""
+    processes are killed (run_cmd) before it exits. They also set
+    daemon.stopping at once, so launches still queued or waiting on the flock
+    refuse ("daemon stopping") without running tk.sh; launches already in
+    tk.sh launch get up to shutdown_grace_s to finish before the exit."""
     loop = asyncio.get_running_loop()
     task = asyncio.create_task(daemon.run_forever())
+
+    def stop():
+        # At once: queued launches refuse, only those in tk.sh launch get waited for.
+        daemon.stopping = True
+        task.cancel()
+
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, task.cancel)
+        loop.add_signal_handler(sig, stop)
     with contextlib.suppress(asyncio.CancelledError):
         await task
+    if daemon.launches:  # a launch killed midway leaves a half-made worktree
+        grace = daemon.cfg["shutdown_grace_s"]
+        log.info("waiting up to %gs for %d launches", grace, len(daemon.launches))
+        await asyncio.wait(set(daemon.launches), timeout=grace)
     log.info("stopped")
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from conftest import row
-from test_tk_daemon import DAEMON, FakeHub, cert, daemon, run  # noqa: F401 — cert is a fixture
+from test_tk_daemon import DAEMON, FakeHub, daemon, run
 
 KEY = "dev-test/alpha/b"
 
@@ -47,7 +47,7 @@ def rpc(id, method, **params):
     }
 
 
-def test_a_move_into_needs_synthesizes_into_hub_meta_and_reports_events(box, cert):  # noqa: F811
+def test_a_move_into_needs_synthesizes_into_hub_meta_and_reports_events(box, cert):
     d = setup_board(box, meta={"archived": False, "summary_note": "kept"})
     box.write("work/alpha/docs/agents/project-memory.md", "1. Keep stdout pure JSON.\n")
     box.write(".local/state/ticket-skill/alpha/reports/feat-01-export.md",
@@ -98,7 +98,7 @@ def test_a_move_into_needs_synthesizes_into_hub_meta_and_reports_events(box, cer
     assert show[0]["cwd"] == str(box.work / "alpha")
 
 
-def test_only_moves_into_needs_human_pr_trigger_and_never_a_first_sight(box, cert):  # noqa: F811
+def test_only_moves_into_needs_human_pr_trigger_and_never_a_first_sight(box, cert):
     d = setup_board(box, col="human")  # already in human when first seen: no run
 
     async def scenario():
@@ -116,7 +116,7 @@ def test_only_moves_into_needs_human_pr_trigger_and_never_a_first_sight(box, cer
     assert len(box.synth_calls()) == 1
 
 
-def test_refine_with_comment_passes_the_comment_and_replies_when_done(box, cert):  # noqa: F811
+def test_refine_with_comment_passes_the_comment_and_replies_when_done(box, cert):
     d = setup_board(box, col="human")
 
     async def scenario():
@@ -139,7 +139,7 @@ def test_refine_with_comment_passes_the_comment_and_replies_when_done(box, cert)
     assert meta(d)["tickets"]["01"]["summary"] == "Written by agy.\nSecond line."
 
 
-def test_a_failed_run_keeps_the_last_good_meta_and_marks_it_failed(box, cert):  # noqa: F811
+def test_a_failed_run_keeps_the_last_good_meta_and_marks_it_failed(box, cert):
     good = {"summary": "Old summary.", "reviewer_notes": "Old note.", "full_report_md": "Old",
             "manual_tasks": [{"text": "Old task", "done": True, "source": "synthesis"}],
             "synthesis_backend": "cursor", "synthesis_status": "ok"}  # fmt: skip
@@ -173,7 +173,7 @@ def test_a_failed_run_keeps_the_last_good_meta_and_marks_it_failed(box, cert):  
     assert [c["bin"] for c in box.synth_calls()] == ["agy", "claude"]
 
 
-def test_a_second_run_merges_the_checklist_keeping_ticks_and_developer_items(box, cert):  # noqa: F811
+def test_a_second_run_merges_the_checklist_keeping_ticks_and_developer_items(box, cert):
     current = [{"text": "Tick a box.", "done": True, "source": "synthesis"},
                {"text": "Dropped, unchecked", "done": False, "source": "synthesis"},
                {"text": "Dropped, checked", "done": True, "source": "synthesis"},
@@ -197,7 +197,7 @@ def test_a_second_run_merges_the_checklist_keeping_ticks_and_developer_items(box
     ]
 
 
-def test_set_task_done_writes_the_tick_to_hub_meta(box, cert):  # noqa: F811
+def test_set_task_done_writes_the_tick_to_hub_meta(box, cert):
     tasks = [{"text": "Open on a phone", "done": False, "source": "synthesis"}]
     d = setup_board(
         box, meta={"archived": False, "tickets": {"01": {"manual_tasks": tasks}}}
@@ -224,7 +224,7 @@ def test_set_task_done_writes_the_tick_to_hub_meta(box, cert):  # noqa: F811
     assert box.synth_calls() == []
 
 
-def test_refine_refuses_an_unknown_ticket_without_running_a_backend(box, cert):  # noqa: F811
+def test_refine_refuses_an_unknown_ticket_without_running_a_backend(box, cert):
     setup_board(box)
 
     async def scenario():
@@ -239,7 +239,7 @@ def test_refine_refuses_an_unknown_ticket_without_running_a_backend(box, cert): 
     assert box.synth_calls() == []
 
 
-def test_a_run_left_running_by_a_killed_daemon_is_marked_interrupted(box, cert):  # noqa: F811
+def test_a_run_left_running_by_a_killed_daemon_is_marked_interrupted(box, cert):
     stale = {"summary": "Old summary.", "synthesis_status": "running"}
     d = setup_board(box, col="human", meta={"tickets": {"01": stale}})
 
@@ -261,7 +261,7 @@ def test_a_run_left_running_by_a_killed_daemon_is_marked_interrupted(box, cert):
     assert box.synth_calls() == []
 
 
-def test_a_run_cut_by_the_rpc_timeout_reports_synthesis_failed(box, cert):  # noqa: F811
+def test_a_run_cut_by_the_rpc_timeout_reports_synthesis_failed(box, cert):
     d = setup_board(box, col="human")
     box.env["FAKE_SYNTH_MODE_AGY"] = "hang"
 
@@ -282,7 +282,7 @@ def test_a_run_cut_by_the_rpc_timeout_reports_synthesis_failed(box, cert):  # no
     assert meta(d)["tickets"]["01"]["synthesis_status"] == "failed"
 
 
-def test_tk_agy_timeout_overrides_the_policy_timeout(box, cert):  # noqa: F811
+def test_tk_agy_timeout_overrides_the_policy_timeout(box, cert):
     setup_board(box, col="human")  # policy synthesis.timeout: 2
     box.env["TK_AGY_TIMEOUT"] = "0.5"
     box.env["FAKE_SYNTH_MODE_AGY"] = "hang"
@@ -300,7 +300,7 @@ def test_tk_agy_timeout_overrides_the_policy_timeout(box, cert):  # noqa: F811
     assert "claude: timed out after 0.5s" in failed["error"]
 
 
-def test_the_coordinator_report_is_read_under_xdg_state_home(box, cert):  # noqa: F811
+def test_the_coordinator_report_is_read_under_xdg_state_home(box, cert):
     setup_board(box, col="human")
     state = box.tmp / "state"
     box.env["XDG_STATE_HOME"] = str(state)

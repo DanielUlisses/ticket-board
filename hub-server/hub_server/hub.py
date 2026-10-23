@@ -24,6 +24,10 @@ RESULT_FIELDS = ("id", "ok", "exit_code", "output_tail", "reason", "data")
 # synthesis_* events a daemon reports, relayed to the UI with these fields only.
 SYNTHESIS_EVENTS = {"synthesis_started", "synthesis_finished", "synthesis_failed"}
 SYNTHESIS_FIELDS = ("type", "board_key", "nn", "backend", "at", "error")
+# The ticket RPCs POST .../tickets/{nn}/action routes to the board's daemon.
+TICKET_ACTIONS = ("launch_ticket", "say_agent", "pane_tail")
+# tk.sh launch --type values (ticket-skill's branch prefixes).
+TICKET_TYPES = ("feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci")
 
 # What sending on a socket whose peer has gone can raise (Starlette, uvicorn).
 SEND_ERRORS = (WebSocketDisconnect, RuntimeError, OSError)
@@ -34,6 +38,38 @@ log = logging.getLogger("hub_server")
 
 class DevboxOffline(Exception):
     pass
+
+
+class BadAction(Exception):
+    """An action the hub will not send: not a ticket RPC, or failing the schema."""
+
+
+def ticket_type(ticket: dict) -> str:
+    """The launch type: the branch's prefix, else the title's first word when it
+    names a type ("Fix the …", "docs: …"), else feat (board.md, Scheduler)."""
+    for text in (ticket.get("branch") or "", ticket.get("title") or ""):
+        word = re.split(r"[-/:\s]", text.strip().lower(), maxsplit=1)[0]
+        if word in TICKET_TYPES:
+            return word
+    return "feat"
+
+
+def frontier_launches(board: dict) -> tuple[list[tuple[str, dict]], list[dict]]:
+    """A board's frontier (its backlog tickets) as launch_ticket params with the
+    suggested model/effort, manual false (the daemon keeps max_parallel), and
+    the tickets skipped for want of a suggestion."""
+    launches, skipped = [], []
+    for t in board.get("tickets") or []:
+        if t.get("col") != "backlog":
+            continue
+        if not t.get("smodel") or not t.get("seffort"):
+            skipped.append({"nn": t["nn"], "reason": "no suggested model/effort"})
+            continue
+        launches.append(
+            (t["nn"], {"type": ticket_type(t), "model": t["smodel"],
+                       "effort": t["seffort"], "manual": False})
+        )  # fmt: skip
+    return launches, skipped
 
 
 @dataclass
@@ -228,6 +264,23 @@ class Hub:
         except SEND_ERRORS:
             await self._finish(rpc_id, _failed(rpc_id, "devbox disconnected"))
         return rpc_id
+
+    async def ticket_action(
+        self, devbox: str, board_key: str, nn: str, method: str, params: dict
+    ) -> dict:
+        """One ticket RPC (TICKET_ACTIONS) to the board's daemon, with board_key
+        and nn added; BadAction when the rpc would break the schema."""
+        if method not in TICKET_ACTIONS:
+            raise BadAction(f"{method!r} is not one of {', '.join(TICKET_ACTIONS)}")
+        if "board_key" in params or "nn" in params:
+            raise BadAction("board_key and nn come from the URL, not params")
+        params = {"board_key": board_key, "nn": nn, **params}
+        rpc = {"type": "rpc", "id": "r-check", "method": method, "params": params}
+        if invalid := protocol.problem(rpc, strict=True):
+            raise BadAction(invalid)
+        rpc_id = await self.send_rpc(devbox, method, params, board_key, nn)
+        return {"id": rpc_id, "devbox": devbox, "method": method,
+                "board_key": board_key, "nn": nn}  # fmt: skip
 
     async def scan(self, devbox: str | None = None) -> list[dict]:
         """rescan_boards on one devbox (DevboxOffline if it isn't connected) or

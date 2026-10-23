@@ -15,7 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hub_server import PROTOCOL_VERSION
-from hub_server.hub import SEND_ERRORS, UI_SEND_TIMEOUT, DevboxOffline, Hub
+from hub_server.hub import (
+    SEND_ERRORS,
+    UI_SEND_TIMEOUT,
+    BadAction,
+    DevboxOffline,
+    Hub,
+    frontier_launches,
+)
 
 REFUSED_CLOSE_CODE = 1008  # policy violation
 # hub-server/hub_server/app.py -> <repo>/hub-web/dist
@@ -164,6 +171,11 @@ class ScanRequest(BaseModel):
     devbox: str | None = None
 
 
+class ActionRequest(BaseModel):
+    method: str
+    params: dict
+
+
 class PolicyValues(BaseModel):
     """The board-override keys the UI may write; box-level keys (max_parallel,
     usage_gate_pct, synthesis) are not among them. An explicit null removes the board
@@ -190,6 +202,10 @@ class CommentRequest(BaseModel):
 class TaskDoneRequest(BaseModel):
     text: StrictStr = Field(min_length=1)
     done: StrictBool
+
+
+class MemoryProposal(BaseModel):
+    text: str
 
 
 def create_app(
@@ -410,6 +426,29 @@ def create_app(
             board_key, nn, "set_task_done", {"text": request.text, "done": request.done}
         )
 
+    @app.post("/api/boards/{board_key:path}/memory", status_code=202)
+    async def propose_memory(board_key: str, request: MemoryProposal):
+        """propose_memory on the board's devbox: the daemon appends a project-memory
+        ticket to the board. The hub never writes project-memory.md itself."""
+        board = hub.store.boards.get(board_key)
+        if not board:
+            raise HTTPException(404, f"no board {board_key}")
+        text = request.text.strip()
+        if not text:
+            raise HTTPException(422, "empty memory rule")
+        try:
+            rpc_id = await hub.send_rpc(
+                board["devbox"],
+                "propose_memory",
+                {"board_key": board_key, "text": text},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(
+                404, f"devbox {board['devbox']} is not connected"
+            ) from None
+        return {"rpc": {"id": rpc_id, "devbox": board["devbox"]}}
+
     @app.post("/api/scan", status_code=202)
     async def scan(request: ScanRequest | None = None):
         """rescan_boards on one devbox, or on every connected one; results
@@ -420,6 +459,55 @@ def create_app(
         except DevboxOffline:
             raise HTTPException(404, f"devbox {devbox} is not connected") from None
         return {"rpcs": rpcs}
+
+    def offline(devbox: str) -> HTTPException:
+        return HTTPException(409, f"devbox {devbox} is not connected")
+
+    @app.post("/api/boards/{board_key:path}/tickets/{nn}/action", status_code=202)
+    async def ticket_action(board_key: str, nn: str, request: ActionRequest):
+        """launch_ticket / say_agent / pane_tail on the board's daemon; the
+        rpc_result arrives on /ws/ui."""
+        find_ticket(board_key, nn)
+        devbox = hub.store.boards.get(board_key)["devbox"]
+        try:
+            sent = await hub.ticket_action(
+                devbox, board_key, nn, request.method, request.params
+            )
+        except BadAction as e:
+            raise HTTPException(422, str(e)) from None
+        except DevboxOffline:
+            raise offline(devbox) from None
+        return {"rpcs": [sent]}
+
+    @app.post("/api/boards/{board_key:path}/frontier", status_code=202)
+    async def launch_frontier(board_key: str):
+        """▶ Frontier: launch_ticket for each of the board's backlog tickets;
+        the daemon refuses those past its max_parallel. A devbox that drops
+        midway keeps the rpcs already sent (202, the rest skipped); 409 only
+        when nothing was sent."""
+        board = hub.store.boards.get(board_key)
+        if not board:
+            raise HTTPException(404, f"no board {board_key}")
+        launches, skipped = frontier_launches(board)
+        rpcs, gone = [], False
+        for nn, params in launches:
+            if gone:
+                skipped.append({"nn": nn, "reason": "devbox disconnected"})
+                continue
+            try:
+                rpcs.append(
+                    await hub.ticket_action(
+                        board["devbox"], board_key, nn, "launch_ticket", params
+                    )
+                )
+            except DevboxOffline:
+                if not rpcs:
+                    raise offline(board["devbox"]) from None
+                gone = True
+                skipped.append({"nn": nn, "reason": "devbox disconnected"})
+            except BadAction as e:  # a suggestion the schema refuses
+                skipped.append({"nn": nn, "reason": str(e)})
+        return {"rpcs": rpcs, "skipped": skipped}
 
     @app.post("/api/boards/{board_key:path}/archive", status_code=202)
     async def archive(board_key: str, request: ArchiveRequest):

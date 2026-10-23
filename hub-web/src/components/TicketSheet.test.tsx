@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { BoardSynced, SynthesisEvent, TicketMoved } from "../protocol/types";
+import type { BoardSynced, ReportResponse, SynthesisEvent, TicketMoved } from "../protocol/types";
 import { createStore } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { CardGrid } from "./CardGrid";
@@ -10,10 +10,10 @@ import { TICK_CONFIRM_MS, TicketSheet, type DetailApi } from "./TicketSheet";
 
 const KEY = "dev-daniel/ticket-skill/tk-hub";
 
-const REPORT = {
+const REPORT: ReportResponse = {
   board_key: KEY,
   nn: "01",
-  title: "Export",
+  title: "Ticket 01",
   full_report_md: "## Coordinator report\n\n```sh\ntk.sh export tk-hub\n```",
   body: "# Ticket body\n\nDo the thing.\n\n```py\nprint('hi')\n```",
 };
@@ -27,6 +27,10 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
     report: vi.fn().mockResolvedValue(REPORT),
     refine: vi.fn().mockResolvedValue(true),
     setTaskDone: vi.fn().mockResolvedValue(true),
+    proposeMemory: vi.fn().mockResolvedValue(true),
+    launch: vi.fn().mockResolvedValue(undefined),
+    say: vi.fn().mockResolvedValue(null),
+    paneTail: vi.fn().mockResolvedValue(undefined),
     ...api,
   };
   const store = createStore();
@@ -128,7 +132,7 @@ describe("TicketSheet", () => {
     expect(client.activity).toHaveBeenCalledWith(KEY, "01");
   });
 
-  it("has an agent pane placeholder", () => {
+  it("has an agent pane", () => {
     setup();
     expect(within(sheet()).getByRole("region", { name: "Agent pane" })).toBeInTheDocument();
   });
@@ -171,7 +175,16 @@ describe("TicketSheet", () => {
     const { container } = render(
       <StoreProvider store={store}>
         <TicketSheet
-          client={{ activity: async () => [], report: async () => REPORT, refine: async () => true, setTaskDone: async () => true }}
+          client={{
+            activity: async () => [],
+            report: async () => REPORT,
+            launch: async () => {},
+            say: async () => null,
+            paneTail: async () => {},
+            proposeMemory: async () => true,
+            refine: async () => true,
+            setTaskDone: async () => true,
+          }}
         />
       </StoreProvider>,
     );
@@ -322,6 +335,14 @@ describe("report modal", () => {
     expect(m.querySelector('a[href^="javascript"]')).toBeNull();
   });
 
+  it("says so when the hub has no ticket body (rest_report body null)", async () => {
+    setup([KEY, "01"], { report: async () => ({ ...REPORT, full_report_md: "# R", body: null }) });
+    fireEvent.click(within(sheet()).getByRole("button", { name: "⤢ Full Review & Reasoning" }));
+    const m = await screen.findByRole("dialog", { name: "Full Review & Reasoning" });
+    await within(m).findByRole("heading", { name: "R" });
+    expect(within(within(m).getByRole("region", { name: "Ticket body" })).getByText("No ticket body.")).toBeInTheDocument();
+  });
+
   it("closes on its backdrop and leaves the sheet open", async () => {
     await openReport();
     fireEvent.click(modal().parentElement!);
@@ -334,5 +355,53 @@ describe("report modal", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Full Review & Reasoning" })).not.toBeInTheDocument();
     expect(sheet()).toBeInTheDocument();
+  });
+
+  describe("Propose to memory", () => {
+    const dialog = () => screen.getByRole("dialog");
+    const field = () => within(dialog()).getByRole("textbox", { name: "Propose to memory" }) as HTMLTextAreaElement;
+    const button = () => within(dialog()).getByRole("button", { name: "Propose to memory" });
+
+    it("prefills from the synthesis rule, is editable, and sends the edited text", async () => {
+      const { client } = setup([KEY, "01"]);
+      expect(field().value).toBe("Export verbs print JSON only on stdout; everything else goes to stderr.");
+      fireEvent.change(field(), { target: { value: "  My own rule.  " } });
+      fireEvent.click(button());
+      expect(client.proposeMemory).toHaveBeenCalledWith(KEY, "My own rule.");
+      await waitFor(() => expect(field().value).toBe(""));
+    });
+
+    it("accepts free text when synthesis offered none, and refuses an empty one", () => {
+      const { client } = setup([KEY, "02"]);
+      expect(field().value).toBe("");
+      expect(button()).toBeDisabled();
+      fireEvent.change(field(), { target: { value: "Typed by hand." } });
+      fireEvent.click(button());
+      expect(client.proposeMemory).toHaveBeenCalledWith(KEY, "Typed by hand.");
+    });
+
+    it("follows a rule that arrives later until the developer edits the field", () => {
+      const { store } = setup([KEY, "02"]);
+      expect(field().value).toBe("");
+      const synced = (rule: string) => {
+        const data = boardsResponse();
+        data.boards.find((b) => b.key === KEY)!.tickets.find((t) => t.nn === "02")!.new_memory_rule = rule;
+        act(() => store.load(data));
+      };
+      synced("First rule.");
+      expect(field().value).toBe("First rule.");
+      fireEvent.change(field(), { target: { value: "Mine." } });
+      synced("Second rule.");
+      expect(field().value).toBe("Mine.");
+    });
+
+    it("keeps the text when the proposal fails", async () => {
+      const { client } = setup([KEY, "02"], { proposeMemory: vi.fn().mockResolvedValue(false) });
+      fireEvent.change(field(), { target: { value: "Keep me." } });
+      fireEvent.click(button());
+      await waitFor(() => expect(button()).toBeEnabled());
+      expect(client.proposeMemory).toHaveBeenCalledTimes(1);
+      expect(field().value).toBe("Keep me.");
+    });
   });
 });
