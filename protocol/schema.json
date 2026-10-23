@@ -403,7 +403,7 @@
       "enum": [
         "rescan_boards",
         "launch_ticket", "say_agent", "pane_tail",
-        "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
+        "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode", "resolve_ticket",
         "set_policy", "set_archived",
         "refine_with_comment", "set_task_done", "add_manual_task", "refresh_board_brief",
         "propose_memory", "run_retro", "retro_apply", "sweep_board",
@@ -427,7 +427,7 @@
         { "if": { "required": ["method"], "properties": { "method": { "const": "launch_ticket" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_launch_ticket" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "say_agent" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_say_agent" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "pane_tail" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_pane_tail" } } } },
-        { "if": { "required": ["method"], "properties": { "method": { "enum": ["open_pr", "ssh_push", "merge_pr", "verify_landed", "request_changes"] } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_ticket" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "enum": ["open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_ticket", "request_changes"] } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_ticket" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "resolve_nocode" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_resolve_nocode" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "set_policy" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_policy" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "set_archived" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_archived" } } } },
@@ -787,7 +787,7 @@
       "additionalProperties": false,
       "required": ["method", "params"],
       "properties": {
-        "method": { "enum": ["launch_ticket", "say_agent", "pane_tail"] },
+        "method": { "enum": ["launch_ticket", "say_agent", "pane_tail", "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode", "resolve_ticket"] },
         "params": { "type": "object" }
       }
     },

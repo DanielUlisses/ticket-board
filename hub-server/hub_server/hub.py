@@ -25,7 +25,11 @@ RESULT_FIELDS = ("id", "ok", "exit_code", "output_tail", "reason", "data")
 SYNTHESIS_EVENTS = {"synthesis_started", "synthesis_finished", "synthesis_failed"}
 SYNTHESIS_FIELDS = ("type", "board_key", "nn", "backend", "at", "error")
 # The ticket RPCs POST .../tickets/{nn}/action routes to the board's daemon.
-TICKET_ACTIONS = ("launch_ticket", "say_agent", "pane_tail")
+TICKET_ACTIONS = (
+    "launch_ticket", "say_agent", "pane_tail",
+    "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
+    "resolve_ticket",
+)  # fmt: skip
 # tk.sh launch --type values (ticket-skill's branch prefixes).
 TICKET_TYPES = ("feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci")
 

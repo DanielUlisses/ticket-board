@@ -31,6 +31,8 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
     launch: vi.fn().mockResolvedValue(undefined),
     say: vi.fn().mockResolvedValue(null),
     paneTail: vi.fn().mockResolvedValue(undefined),
+    ship: vi.fn().mockResolvedValue(true),
+    resolveNoCode: vi.fn().mockResolvedValue(true),
     ...api,
   };
   const store = createStore();
@@ -182,6 +184,8 @@ describe("TicketSheet", () => {
             say: async () => null,
             paneTail: async () => {},
             proposeMemory: async () => true,
+            ship: async () => true,
+            resolveNoCode: async () => true,
             refine: async () => true,
             setTaskDone: async () => true,
           }}

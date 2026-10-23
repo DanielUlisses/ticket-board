@@ -465,7 +465,7 @@ def create_app(
 
     @app.post("/api/boards/{board_key:path}/tickets/{nn}/action", status_code=202)
     async def ticket_action(board_key: str, nn: str, request: ActionRequest):
-        """launch_ticket / say_agent / pane_tail on the board's daemon; the
+        """a ticket RPC (launch, say, pane tail, ship verbs) on the board's daemon; the
         rpc_result arrives on /ws/ui."""
         find_ticket(board_key, nn)
         devbox = hub.store.boards.get(board_key)["devbox"]
