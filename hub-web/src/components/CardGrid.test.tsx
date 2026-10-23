@@ -21,14 +21,14 @@ function renderGrid(prepare?: (store: ReturnType<typeof createStore>) => void) {
 const boardSection = (repo: string) => screen.getByRole("region", { name: new RegExp(`^tk-hub ${repo}`) });
 
 describe("CardGrid", () => {
-  it("draws a board bar per board: id pill, title, devbox and forge sub-pills", () => {
+  it("draws a board bar per board: id pill, title, devbox and autonomy · forge sub-pills", () => {
     renderGrid();
     expect(screen.getAllByRole("region")).toHaveLength(3);
     const bar = boardSection("devboxes");
     expect(within(bar).getByText("tk-hub")).toBeInTheDocument();
     expect(within(bar).getByRole("heading", { name: "devboxes" })).toBeInTheDocument();
     expect(within(bar).getByText("dev-daniel")).toBeInTheDocument();
-    expect(within(bar).getByText("none")).toBeInTheDocument();
+    expect(within(bar).getByText("assist · none")).toBeInTheDocument();
   });
 
   it("a card shows the column's glyph in its variant, #NN title, summary, tag pills and checks metric", () => {

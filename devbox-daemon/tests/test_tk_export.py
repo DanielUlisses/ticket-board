@@ -155,6 +155,41 @@ def test_without_the_policy_verb_policy_is_the_box_repo_board_layers(box):
     assert [c["argv"][0] for c in box.tk_calls()].count("policy") == 0
 
 
+def test_policy_sources_name_the_layer_each_value_comes_from(box):
+    box.write(
+        ".config/tk-daemon/policy.json", {"max_parallel": 3, "autonomy": "assist"}
+    )
+    box.write(
+        "work/alpha/.scratch/policy.json", {"autonomy": "auto", "night_shift": True}
+    )
+    box.board(
+        "alpha",
+        "b",
+        [row("01")],
+        {"policy.json": {"auto_merge": True, "night_shift": False}},
+    )
+
+    b = boards_by_key(snapshot(box))["dev-test/alpha/b"]
+    env = boards_by_key(snapshot(box, TICKET_FORGE="github"))["dev-test/alpha/b"]
+
+    assert b["policy_sources"] == {
+        "forge": "detected", "require_human_before_pr": "default", "auto_merge": "board",
+        "night_shift": "board", "autonomy": "repo", "max_parallel": "box",
+        "usage_gate_pct": "default", "synthesis": "default"}  # fmt: skip
+    assert env["policy_sources"]["forge"] == "env"
+
+
+def test_forge_of_a_repo_without_a_remote_is_sourced_no_remote_even_with_the_env(box):
+    box.board("alpha", "b", [row("01")], {"no-remote": ""})
+
+    plain = boards_by_key(snapshot(box))["dev-test/alpha/b"]
+    env = boards_by_key(snapshot(box, TICKET_FORGE="github"))["dev-test/alpha/b"]
+
+    assert plain["policy_sources"]["forge"] == "no-remote"
+    assert env["policy_sources"]["forge"] == "no-remote"
+    assert plain["policy_sources"]["autonomy"] == "default"
+
+
 def test_a_tk_sh_policy_error_fails_the_board_and_reaches_stderr(box):
     box.board("alpha", "good", [row("01")], {"resolved-policy.json": RESOLVED})
     box.board("alpha", "bad", [row("01")], {"policy-fails": ""})
