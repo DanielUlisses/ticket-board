@@ -240,6 +240,17 @@ describe("setArchived", () => {
   });
 });
 
+describe("syncBox", () => {
+  it("POSTs {force} to the devbox's sync route and toasts ok", async () => {
+    const { store, fetch, client } = setup();
+    await client.syncBox("dev box", true);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe("https://tk-hub.example.ts.net/api/devboxes/dev%20box/sync");
+    expect(JSON.parse(init?.body as string)).toEqual({ force: true });
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "ok" });
+  });
+});
+
 describe("refine and setTaskDone", () => {
   it("refine POSTs {comment} to the ticket's comment route", async () => {
     const { fetch, client } = setup();
@@ -307,6 +318,22 @@ describe("ticket actions", () => {
     expect(store.view().toasts.map((t) => [t.kind, t.text])).toEqual([
       ["warn", "▶ Frontier: launching #08, #27; skipped #09 (no suggested model/effort)"],
     ]);
+  });
+
+  it("refreshBrief posts to the board's brief route and tracks the rpc", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ rpcs: [sent("")] }, 202));
+    expect(await client.refreshBrief(KEY)).toBe(true);
+    expect(fetch.mock.calls[0][0]).toBe(`https://tk-hub.example.ts.net/api/boards/${KEY}/brief`);
+    expect(fetch.mock.calls[0][1]?.method).toBe("POST");
+    expect(store.view().pending).toHaveLength(1);
+  });
+
+  it("a refused brief refresh toasts and returns false", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ detail: "devbox dev-daniel is offline" }, 409));
+    expect(await client.refreshBrief(KEY)).toBe(false);
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("offline") });
   });
 
   it("a result that beats its POST's answer leaves nothing pending", async () => {

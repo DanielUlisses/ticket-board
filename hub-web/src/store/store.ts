@@ -4,7 +4,7 @@
 // Components read it through `view()` (a cached snapshot, stable between
 // changes, so it plugs into useSyncExternalStore) and never keep their own copy.
 import { COLUMN_META, GROUPS, type Group } from "../columns";
-import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, SynthesisEvent, UiEvent } from "../protocol/types";
+import type { Board, BoardBrief, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, SynthesisEvent, UiEvent } from "../protocol/types";
 
 /** The stage presets (pills) and the keys of `Counts`: "all" is every group. */
 export type Stage = "all" | Group;
@@ -162,6 +162,27 @@ function synthesisPatch(e: SynthesisEvent, t: Ticket): Partial<Ticket> {
   }
 }
 
+/** A board-brief event's change to the board's brief: its lines stay (the content follows with board_synced); a board with no brief yet gets an empty one. */
+function briefPatch(e: SynthesisEvent, old: BoardBrief | null | undefined): BoardBrief {
+  const brief: BoardBrief = old ?? {
+    landed: [],
+    in_flight: [],
+    needs_you: [],
+    next: [],
+    synthesis_backend: null,
+    synthesis_status: "none",
+    updated_at: null,
+  };
+  switch (e.type) {
+    case "synthesis_started":
+      return { ...brief, synthesis_status: "running" };
+    case "synthesis_finished":
+      return { ...brief, synthesis_status: "ok", synthesis_backend: e.backend ?? brief.synthesis_backend, synthesis_error: null };
+    case "synthesis_failed":
+      return { ...brief, synthesis_status: "failed", synthesis_error: e.error ?? null };
+  }
+}
+
 export function createStore() {
   let state: State = {
     page: "cards",
@@ -294,8 +315,21 @@ export function createStore() {
       case "synthesis_started":
       case "synthesis_finished":
       case "synthesis_failed": {
-        // nn null is the board brief (ticket 18).
-        const board = event.nn === null ? undefined : state.boards.find((b) => b.key === event.board_key);
+        if (event.nn === null) {
+          // The board brief.
+          const target = state.boards.find((b) => b.key === event.board_key);
+          if (!target) return;
+          set({
+            boards: mapBoards(
+              (b) => b === target,
+              (b) => ({ ...b, hub_meta: { ...b.hub_meta, board_brief: briefPatch(event, b.hub_meta.board_brief) } }),
+            ),
+          });
+          if (event.type === "synthesis_failed")
+            toast({ kind: "error", text: `Board brief of ${target.slug} failed: ${event.error ?? "no reason given"}` });
+          return;
+        }
+        const board = state.boards.find((b) => b.key === event.board_key);
         if (!board?.tickets.some((t) => t.nn === event.nn)) return;
         set({
           boards: mapBoards(

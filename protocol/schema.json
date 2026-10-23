@@ -96,7 +96,8 @@
       "properties": {
         "started_at": { "$ref": "#/$defs/timestamp" },
         "finished_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
-        "exit_code": { "type": ["integer", "null"] },
+        "exit_code": { "type": ["integer", "null"], "description": "null while it runs or when it was interrupted." },
+        "interrupted": { "type": "boolean", "description": "No exit code and its systemd unit is gone: killed or rebooted mid-sync." },
         "log_path": { "type": "string" },
         "log_tail": { "type": "string" }
       }
@@ -164,7 +165,8 @@
         "next": { "type": "array", "items": { "type": "string" } },
         "synthesis_backend": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/synthesis_backend" }] },
         "synthesis_status": { "$ref": "#/$defs/synthesis_status" },
-        "updated_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] }
+        "updated_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
+        "synthesis_error": { "description": "Why the last run failed (synthesis_status failed; the lines above are the previous good brief), else null.", "type": ["string", "null"] }
       }
     },
     "hub_meta": {
@@ -865,6 +867,14 @@
     },
     "rest_archive": {
       "description": "REST: POST /api/boards/{key}/archive, body {archived: boolean} -> 202, one set_archived rpc to the board's devbox; its rpc_result arrives on /ws/ui. 404 unknown board, 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
+    "rest_sync_box": {
+      "description": "REST: POST /api/devboxes/{devbox}/sync, body {force?: boolean} -> 202, one sync_box rpc to the devbox; the outcome arrives as health.last_sync after the daemon reconnects. 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
+    "rest_board_brief": {
+      "description": "REST: POST /api/boards/{key}/brief (no body) -> 202, one refresh_board_brief rpc to the board's devbox: a board-brief synthesis run now. synthesis_* events (nn null) and the rpc_result arrive on /ws/ui. 404 unknown board, 409 devbox offline.",
       "$ref": "#/$defs/rest_scan"
     },
     "rest_propose_memory": {

@@ -16,7 +16,7 @@ Reconnects with exponential backoff and jitter.
    "backoff_initial_s" (1), "backoff_max_s" (60), "rpc_timeout_s" (120),
    "rpc_synthesis_timeout_s" (600), "hello_timeout_s" (30), "export_timeout_s" (60),
    "export_call_timeout_s" (30), "launch_lock_wait_s" (5), "launch_timeout_s" (900),
-   "reservation_ttl_s" (120), "shutdown_grace_s" (60),
+   "reservation_ttl_s" (120), "shutdown_grace_s" (60), "brief_debounce_s" (30),
    "schema" (../protocol/schema.json)}
 Health and every board are checked against the schema before sending: a board
 that fails it is failed (keeps its last copy), never sent.
@@ -139,6 +139,7 @@ DEFAULTS = {
     # Floored at DIFF_RACY_FLOOR_S, whatever is configured: filesystems stamp
     # times in whole seconds (ext3, HFS+, some NFS) or 2 s (FAT).
     "diff_racy_window_s": 2.0,
+    "brief_debounce_s": 30,  # a board's brief refreshes this long after its last move
 }
 # The board-override keys set_policy may write, mirroring tk.sh's POLICY_CHECK; box-level
 # keys (max_parallel, usage_gate_pct, synthesis) are not among them.
@@ -541,6 +542,69 @@ async def run_limited(
     return proc.returncode, bytes(buf), err.decode(errors="replace"), overflow
 
 
+def sync_dir() -> Path:
+    return Path.home() / ".local" / "state" / "tk-daemon"
+
+
+def daemon_version() -> str:
+    """What the install last put on this box: `install.sh daemon` writes the
+    revision it installed to ~/.local/share/tk-hub/VERSION, so it changes when a
+    sync installs a new daemon. DAEMON_VERSION when there is none."""
+    try:
+        text = (Path.home() / ".local" / "share" / "tk-hub" / "VERSION").read_text()
+    except OSError:
+        return DAEMON_VERSION
+    return text.strip() or DAEMON_VERSION
+
+
+SYNC_LOG = re.compile(r"sync-(\d{8})T(\d{6})(\d{3})?Z\.log")
+
+
+def sync_logs() -> list[tuple[str, Path]]:
+    """(stamp, log) of the logs this daemon named, oldest first; others are ignored."""
+    found = []
+    for path in sync_dir().glob("sync-*.log"):
+        if m := SYNC_LOG.fullmatch(path.name):
+            found.append((m.group(1) + m.group(2) + (m.group(3) or "000"), path))
+    found.sort()
+    return [(path.stem.removeprefix("sync-"), path) for _, path in found]
+
+
+async def sync_unit_active(stamp: str) -> bool:
+    rc, out, _ = await run_cmd(["systemctl", "--user", "is-active", f"tk-sync-{stamp}"])
+    return rc == 0 and out.strip() in ("active", "activating")
+
+
+async def last_sync(starting: set[str] = frozenset()) -> dict | None:
+    """The newest sync-<stamp>.log under the state dir with its .exit file. No
+    .exit file: the sync is still running (unit active, or just being started) or
+    was interrupted (unit gone: killed, rebooted)."""
+    logs = sync_logs()
+    if not logs:
+        return None
+    stamp, log_path = logs[-1]
+    started = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}T{stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}Z"
+    code_path = log_path.with_suffix(".exit")
+    interrupted = False
+    try:
+        exit_code = int(code_path.read_text().strip())
+        finished = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(code_path.stat().st_mtime)
+        )
+    except (OSError, ValueError):
+        exit_code, finished = None, None
+        interrupted = stamp not in starting and not await sync_unit_active(stamp)
+    try:
+        tail = "".join(
+            log_path.read_text(errors="replace").splitlines(keepends=True)[-20:]
+        )
+    except OSError:
+        tail = ""
+    return {"started_at": started, "finished_at": finished, "exit_code": exit_code,
+            "interrupted": interrupted, "log_path": str(log_path),
+            "log_tail": tail}  # fmt: skip
+
+
 async def run_cmd(
     argv: list[str], env: dict | None = None, cwd: str | None = None,
     errors: str = "replace",
@@ -660,6 +724,8 @@ class Daemon:
         self.fp_cache: collections.OrderedDict[str, tuple[tuple, dict]] = (
             collections.OrderedDict()
         )
+        # stamps of syncs whose systemd-run is still starting
+        self.sync_starting: set[str] = set()
         self.need_full = True  # the next snapshot must be full (a new connection)
         self.export_start = 0  # where the next export starts (tk-export: resume)
         self.schema = Schema(json.loads(Path(cfg.get("schema", SCHEMA)).read_text()))
@@ -667,6 +733,9 @@ class Daemon:
         self.ws = None  # the hub connection, while there is one (synthesis events)
         self.synthesizing: set[tuple[str, str]] = set()  # (board key, nn) running now
         self.synth_tasks: set[asyncio.Task] = set()  # runs started by a column move
+        self.brief_dirty: set[str] = set()  # moved while its brief was running
+        self.briefing: set[str] = set()  # board keys with a brief running now
+        self.brief_timers: dict[str, asyncio.Task] = {}  # debounce, per board key
         self.agy_timeout = env_agy_timeout()  # the box's, over every board's policy
         # Launches take a slot under launch_lock, before tk.sh runs; the slot is
         # held (reserved) until a snapshot shows the ticket out of backlog, or
@@ -685,6 +754,7 @@ class Daemon:
             "set_archived": self.rpc_set_archived,
             "set_policy": self.rpc_set_policy,
             "refine_with_comment": self.rpc_refine_with_comment,
+            "refresh_board_brief": self.rpc_refresh_board_brief,
             "set_task_done": self.rpc_set_task_done,
             "propose_memory": self.rpc_propose_memory,
             "open_pr": functools.partial(self.rpc_ship, "open_pr"),
@@ -694,6 +764,7 @@ class Daemon:
             "resolve_ticket": functools.partial(self.rpc_ship, "resolve_ticket"),
             "verify_landed": self.rpc_verify_landed,
             "get_diff": self.rpc_get_diff,
+            "sync_box": self.rpc_sync_box,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -701,7 +772,7 @@ class Daemon:
         env = {
             **os.environ,
             "TK_DEVBOX": self.cfg["devbox"],
-            "TK_DAEMON_VERSION": DAEMON_VERSION,
+            "TK_DAEMON_VERSION": daemon_version(),
             "TK_EXPORT_CALL_TIMEOUT": f"{self.cfg['export_call_timeout_s']:g}",
             "TK_EXPORT_START": str(self.export_start),
         }
@@ -733,6 +804,9 @@ class Daemon:
         for key, path in FAILED.findall(err):
             failed.add(sent_dirs.get(os.path.realpath(path), key) if path else key)
         snap = json.loads(out)
+        if isinstance(snap.get("health"), dict):
+            snap["health"]["last_sync"] = await last_sync(self.sync_starting)
+            snap["health"]["daemon_version"] = daemon_version()
         if errors := self.schema.errors(snap.get("health"), "health"):
             log.error("export: health fails the schema (%s)", "; ".join(errors[:3]))
             snap["health"] = self.fallback_health("health failed the schema")
@@ -781,6 +855,8 @@ class Daemon:
             removed = sorted(self.sent.keys() - boards.keys())
             held = sorted(failed - boards.keys())
             moved = self.moves_to_synthesize(boards)
+            for key in self.boards_that_moved(boards):
+                self.schedule_brief(key)
             want_full = full or self.need_full
             full = want_full and not held
             changed = [
@@ -1532,6 +1608,57 @@ class Daemon:
             "output_tail": f"{key} archived={str(flag).lower()}",
         }
 
+    async def rpc_sync_box(self, ws, params: dict) -> dict:
+        """`devbox sync`, started detached under `systemd-run --user` so it
+        outlives this daemon (a sync reinstalls it); refused while a sync already
+        runs, and while a ticket is working or in review unless `force`. Returns at
+        once: last_sync reports the outcome."""
+        last = await last_sync(self.sync_starting)
+        if last and last["exit_code"] is None and not last["interrupted"]:
+            raise RpcRefused(f"a sync is already running (log {last['log_path']})")
+        busy = sum(
+            1
+            for b in self.sent.values()
+            for t in b.get("tickets") or []
+            if t.get("col") in RUNNING
+        )
+        if busy and not params.get("force"):
+            raise RpcRefused(
+                f"{busy} ticket(s) working or in review on this box: sync anyway to force it"
+            )
+        sync_dir().mkdir(parents=True, exist_ok=True)
+        ms = int(time.time() * 1000)
+        while True:  # never reuse a stamp: the log is created exclusively
+            stamp = (
+                time.strftime("%Y%m%dT%H%M%S", time.gmtime(ms / 1000))
+                + f"{ms % 1000:03d}Z"
+            )
+            log_path = sync_dir() / f"sync-{stamp}.log"
+            try:
+                log_path.open("x").close()
+                break
+            except FileExistsError:
+                ms += 1
+        code_path = log_path.with_suffix(".exit")
+        code_path.unlink(missing_ok=True)
+        script = 'devbox sync >"$0" 2>&1; echo $? >"$1"'
+        self.sync_starting.add(stamp)
+        try:
+            rc, out, err = await run_cmd(
+                ["systemd-run", "--user", "--collect", f"--unit=tk-sync-{stamp}",
+                 "sh", "-c", script, str(log_path), str(code_path)]
+            )  # fmt: skip
+        finally:
+            self.sync_starting.discard(stamp)
+        if rc != 0:
+            log_path.unlink(missing_ok=True)
+            raise RpcRefused(f"systemd-run failed: {(err or out).strip()[-300:]}")
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"devbox sync started, log {log_path}",
+        }
+
     async def rpc_set_policy(self, ws, params: dict) -> dict:
         """`tk.sh policy-set <board> key=value…` in the repo's main checkout; the
         re-export after every RPC then carries the new resolved policy."""
@@ -1582,6 +1709,23 @@ class Daemon:
             "output_tail": f"{board['key']} #{ticket['nn']}: synthesized by {result.backend}",
         }
 
+    async def rpc_refresh_board_brief(self, ws, params: dict) -> dict:
+        board = self.board(params)
+        if board["key"] in self.briefing:
+            raise RpcRefused(f"the board brief of {board['key']} is already running")
+        if (timer := self.brief_timers.pop(board["key"], None)) is not None:
+            timer.cancel()  # this run covers what it was waiting for
+        try:
+            result = await self.refresh_brief(board)
+        except agy_runner.SynthesisFailed as e:
+            return {"ok": False, "exit_code": None, "output_tail": "",
+                    "reason": f"synthesis failed: {e}"}  # fmt: skip
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"{board['key']}: board brief by {result.backend}",
+        }
+
     async def rpc_set_task_done(self, ws, params: dict) -> dict:
         board, ticket = self.board_ticket(params)
         text, done = params.get("text"), params.get("done")
@@ -1623,12 +1767,73 @@ class Daemon:
             ]
         return moved
 
+    def boards_that_moved(self, boards: dict) -> list[str]:
+        """Keys of the boards where a known ticket changed column since the last
+        export (any column, unlike moves_to_synthesize); archived boards are left alone."""
+        moved = []
+        for key, b in boards.items():
+            old = self.sent.get(key)
+            if old is None or b["hub_meta"].get("archived"):
+                continue
+            before = {t["nn"]: t["col"] for t in old["tickets"]}
+            if any(before.get(t["nn"], t["col"]) != t["col"] for t in b["tickets"]):
+                moved.append(key)
+        return moved
+
+    def schedule_brief(self, key: str):
+        """Refresh the brief of board `key` once no ticket has moved for
+        brief_debounce_s: each move restarts the wait."""
+        if (timer := self.brief_timers.pop(key, None)) is not None:
+            timer.cancel()
+
+        async def later():
+            try:
+                await asyncio.sleep(self.cfg["brief_debounce_s"])
+                self.brief_timers.pop(key, None)
+                board = self.sent.get(key)
+                if not board or board["hub_meta"].get("archived"):
+                    return
+                if key in self.briefing:
+                    self.brief_dirty.add(key)  # the running one re-runs when it ends
+                    return
+                try:
+                    await self.refresh_brief(board)
+                except agy_runner.SynthesisFailed:
+                    pass  # recorded, and told to the hub
+                if self.ws is not None:
+                    await self.sync(self.ws, full=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — logged; the next move tries again
+                log.warning("board brief of %s: %s: %s", key, type(e).__name__, e)
+
+        task = asyncio.create_task(later())
+        self.brief_timers[key] = task
+        self.synth_tasks.add(task)
+        task.add_done_callback(self.synth_tasks.discard)
+
     def fail_interrupted(self, boards: list[dict]) -> bool:
         """Mark failed ("interrupted") each ticket of `boards` whose hub-meta still says
         `running` with no run of this daemon behind it: one a killed daemon left.
         True when any was."""
         found = False
         for b in boards:
+            brief = b["hub_meta"].get("board_brief")
+            if (isinstance(brief, dict) and brief.get("synthesis_status") == "running"
+                    and b["key"] not in self.briefing):  # fmt: skip
+                path = Path(b["board_path"])
+                try:
+                    meta = read_meta(path)
+                    entry = meta.get("board_brief")
+                    if (isinstance(entry, dict)
+                            and entry.get("synthesis_status") == "running"):  # fmt: skip
+                        entry.update(synthesis_status="failed",
+                                     synthesis_error="interrupted")  # fmt: skip
+                        write_meta(path, meta)
+                        found = True
+                        log.warning("board brief of %s was interrupted", b["key"])
+                except (OSError, ValueError) as e:
+                    log.warning("hub-meta of %s: %s", b["key"], e)
             for t in b["tickets"]:
                 if (t.get("synthesis_status") != "running"
                         or (b["key"], t["nn"]) in self.synthesizing):  # fmt: skip
@@ -1667,7 +1872,9 @@ class Daemon:
         self.synth_tasks.add(task)
         task.add_done_callback(self.synth_tasks.discard)
 
-    async def send_event(self, kind: str, key: str, nn: str, backend, error=None):
+    async def send_event(
+        self, kind: str, key: str, nn: str | None, backend, error=None
+    ):
         """synthesis_started / _finished / _failed to the hub, which relays it to the UI;
         dropped while there is no connection."""
         msg = {"type": f"synthesis_{kind}", "board_key": key, "nn": nn,
@@ -1790,6 +1997,83 @@ class Daemon:
             return result
         finally:
             self.synthesizing.discard((key, nn))
+
+    async def refresh_brief(self, board: dict) -> agy_runner.BriefResult:
+        """One board-brief run into the board's hub-meta.json `board_brief`. A failed
+        run keeps the previous brief's lines and marks it failed; raises
+        SynthesisFailed (after recording it). board.md is only read."""
+        key = board["key"]
+        if key in self.briefing:
+            raise ValueError(f"the board brief of {key} is already running")
+        path = Path(board["board_path"])
+        policy = synthesis_policy(board)
+        first = synthesis_backends(policy)[0]
+        self.briefing.add(key)
+
+        def record(**fields):
+            meta = read_meta(path)
+            old = meta.get("board_brief")
+            brief = {"landed": [], "in_flight": [], "needs_you": [], "next": [],
+                     "synthesis_backend": None, "updated_at": None}  # fmt: skip
+            brief.update(old if isinstance(old, dict) else {})
+            brief.update(fields)
+            meta["board_brief"] = brief
+            write_meta(path, meta)
+
+        try:
+            record(synthesis_status="running", synthesis_error=None)
+            await self.send_event("started", key, None, first)
+            try:
+                ctx = agy_runner.SynthesisContext(
+                    cwd=board["root"],
+                    ticket=f"{board.get('slug') or key}",
+                    project_memory=read_file(
+                        Path(board["root"]) / "docs/agents/project-memory.md"
+                    ),
+                    backends=synthesis_backends(policy),
+                    timeout=self.agy_timeout or self.policy_timeout(board, policy),
+                    commands=policy.get("commands")
+                    if isinstance(policy.get("commands"), dict)
+                    else {},
+                    board_md=board.get("board_md"),
+                    board_state="\n".join(
+                        f"{t['nn']} [{t['col']}] {t['title']}" for t in board["tickets"]
+                    ),
+                )
+                result = await agy_runner.synthesize_brief(ctx)
+            except asyncio.CancelledError:
+                with contextlib.suppress(Exception):
+                    record(synthesis_status="failed", synthesis_error="interrupted")
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        self.send_event("failed", key, None, None, "interrupted"), 5
+                    )
+                raise
+            except Exception as e:
+                error = str(e)
+                record(synthesis_status="failed", synthesis_error=error)
+                backend = (
+                    e.backend if isinstance(e, agy_runner.SynthesisFailed) else None
+                )
+                await self.send_event("failed", key, None, backend, error)
+                raise
+            record(
+                landed=result.landed,
+                in_flight=result.in_flight,
+                needs_you=result.needs_you,
+                next=result.next,
+                synthesis_backend=result.backend,
+                synthesis_status="ok",
+                synthesis_error=None,
+                updated_at=utc_now(),
+            )
+            await self.send_event("finished", key, None, result.backend)
+            return result
+        finally:
+            self.briefing.discard(key)
+            if key in self.brief_dirty:
+                self.brief_dirty.discard(key)
+                self.schedule_brief(key)
 
     async def rpc_propose_memory(self, ws, params: dict) -> dict:
         """Project memory only changes through a ticket: append the next-numbered
@@ -1951,7 +2235,7 @@ class Daemon:
         if self.health is not None:
             return self.health
         return {
-            "daemon_version": DAEMON_VERSION,
+            "daemon_version": daemon_version(),
             "herdr": {"ok": False, "status": f"unknown: {why}"},
             "usage": {"state": "unknown", "five_hour": None, "seven_day": None,
                       "updated_at": None},
@@ -2095,7 +2379,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     log.info(
         "tk-daemon %s for %s, hub %s via %s",
-        DAEMON_VERSION,
+        daemon_version(),
         cfg["devbox"],
         daemon.name,
         cfg["ip"],

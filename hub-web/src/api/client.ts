@@ -222,6 +222,10 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
       });
       return res.rpcs;
     },
+    /** 📄 Board's ↻ Refresh: a board-brief synthesis run now; true when the hub took it. The brief itself arrives with the board's next snapshot. */
+    async refreshBrief(boardKey: string): Promise<boolean> {
+      return (await action("Board brief", boardUrl(boardKey, "brief"))) !== null;
+    },
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {
       stopped = false;
@@ -304,6 +308,20 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         else store.toast({ kind: "error", text: `${verb} failed: ${await errorText(res)}` });
       } catch (err) {
         store.toast({ kind: "error", text: `${verb} failed: ${(err as Error).message}` });
+      }
+    },
+    /** ⟳ Sync box: the hub asks the box's daemon to start `devbox sync`; a refusal (tickets working or in review, a sync already running, systemd-run failing: its stderr) comes back as its rpc_result, which the store toasts. */
+    async syncBox(devbox: string, force: boolean) {
+      try {
+        const res = await doFetch(`${origin}/api/devboxes/${encodeURIComponent(devbox)}/sync`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ force }),
+        });
+        if (res.ok) store.toast({ kind: "ok", text: `⟳ Sync sent to ${devbox}` });
+        else store.toast({ kind: "error", text: `⟳ Sync failed: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `⟳ Sync failed: ${(err as Error).message}` });
       }
     },
   };

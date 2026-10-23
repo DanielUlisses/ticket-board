@@ -167,6 +167,10 @@ class ArchiveRequest(BaseModel):
     archived: bool
 
 
+class SyncRequest(BaseModel):
+    force: bool = False
+
+
 class ScanRequest(BaseModel):
     devbox: str | None = None
 
@@ -569,6 +573,36 @@ def create_app(
                 devbox,
                 "set_archived",
                 {"board_key": board_key, "archived": request.archived},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
+
+    @app.post("/api/devboxes/{devbox}/sync", status_code=202)
+    async def sync_devbox(devbox: str, request: SyncRequest):
+        """sync_box on the devbox (online only). The daemon refuses while a ticket
+        is working unless force, and answers at once; the outcome comes back as
+        health.last_sync after it reconnects."""
+        try:
+            rpc_id = await hub.send_rpc(devbox, "sync_box", {"force": request.force})
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
+
+    @app.post("/api/boards/{board_key:path}/brief", status_code=202)
+    async def refresh_brief(board_key: str):
+        """refresh_board_brief on the board's devbox (box online only); the brief
+        arrives in the board's next snapshot, synthesis_* events on /ws/ui."""
+        board = hub.store.boards.get(board_key)
+        if board is None:
+            raise HTTPException(404, f"no board {board_key}")
+        devbox = board["devbox"]
+        try:
+            rpc_id = await hub.send_rpc(
+                devbox,
+                "refresh_board_brief",
+                {"board_key": board_key},
                 board_key=board_key,
             )
         except DevboxOffline:
