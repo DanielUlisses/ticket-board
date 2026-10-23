@@ -50,7 +50,14 @@ re-export after the next RPC or tick shows it. ticket-skill's tk.sh does not
 take the flock, so a board's own session is not kept out. A launch holds a slot
 against max_parallel until an export shows the ticket out of backlog, or
 reservation_ttl_s after tk.sh launch returned. say_agent's message goes through
-a temp file; tk.sh exit 20 (at a dialog) and 21 (no agent) come back as reasons. pane_tail returns the lines in
+a temp file; tk.sh exit 20 (at a dialog) and 21 (no agent) come back as reasons.
+get_diff (read-only: git diff / ls-files in the ticket's worktree with
+GIT_OPTIONAL_LOCKS=0 and no user git config, never add) returns the changed files
+and diff_hash, or one file's diff capped at diff_cap_chars (a file that would be
+stubbed is never pulled into memory; captured git output stops at the diff_max_*
+limits). Untracked files are read and hashed directly in chunks, within a size and
+total budget, past which they are fingerprinted by stat only; an untracked nested repo is listed as a `nested_repo`
+stub whose hash carries its HEAD. pane_tail returns the lines in
 data.pane and, being read-only, is not followed by a re-export.
 Synthesis (agy_runner.py): a ticket that moves into needs, human or pr between two
 exports (never one seen for the first time), and refine_with_comment, run the board's
@@ -68,10 +75,14 @@ they are killed, so systemd's TimeoutStopSec must exceed it (the default 90 s
 does, for the default 60 s).
 """
 
+import argparse
 import asyncio
+import collections
 import contextlib
+import errno
 import fcntl
 import functools
+import hashlib
 import json
 import logging
 import math
@@ -81,8 +92,10 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import sys
 import tempfile
+import threading
 import time
 import typing
 from pathlib import Path
@@ -110,6 +123,22 @@ DEFAULTS = {
     "launch_timeout_s": 900,
     "reservation_ttl_s": 120,
     "shutdown_grace_s": 60,
+    "diff_cap_chars": 200_000,
+    # get_diff memory bounds: any captured git output (names, one file's diff)
+    "diff_max_output_bytes": 4 << 20,
+    # the full tracked diff, streamed into diff_hash (refused past it)
+    "diff_max_hash_bytes": 256 << 20,
+    # an untracked file larger than this is stat-fingerprinted, not read
+    "diff_max_untracked_file_bytes": 16 << 20,
+    # untracked bytes read per request; the rest are stat-fingerprinted
+    "diff_max_untracked_bytes": 256 << 20,
+    # files listed (the hash still covers them all)
+    "diff_max_files": 1000,
+    # a file whose mtime/ctime is this close to the read is not cached (it could
+    # still change within the timestamp's granularity: git's "racily clean" rule).
+    # Floored at DIFF_RACY_FLOOR_S, whatever is configured: filesystems stamp
+    # times in whole seconds (ext3, HFS+, some NFS) or 2 s (FAT).
+    "diff_racy_window_s": 2.0,
 }
 # The board-override keys set_policy may write, mirroring tk.sh's POLICY_CHECK; box-level
 # keys (max_parallel, usage_gate_pct, synthesis) are not among them.
@@ -128,7 +157,7 @@ RESUME = re.compile(r"^tk-export: resume ([0-9]+)$", re.MULTILINE)
 TAIL = 4000  # characters of output_tail
 PANE = 200_000  # characters of a pane_tail's data.pane
 # RPCs that change nothing: no re-export after them (pane_tail is polled).
-READ_ONLY_RPCS = frozenset({"rescan_boards", "pane_tail", "verify_landed"})
+READ_ONLY_RPCS = frozenset({"rescan_boards", "pane_tail", "verify_landed", "get_diff"})
 MAX_PARALLEL = 5  # running tickets per box, unless the box policy says otherwise
 RUNNING = ("working", "review")  # as tk-export.sh counts health.running
 # tk.sh say / show exit codes, as the UI shows them.
@@ -336,9 +365,186 @@ async def board_lock(board_path: str, wait: float) -> typing.IO:
         raise
 
 
+DIFF_RACY_FLOOR_S = 2.0
+# Test-only: the hidden --diff-racy-window-test-s flag (see main) bypasses the
+# floor, as a test has to let the stat cache engage on a file it just wrote. It is
+# a flag, not a config key, so a user's config.json cannot set it.
+
+# get_diff's git flags: everything that could vary with the dev's git config is
+# pinned, so diff_hash changes only with the content: no system or global config,
+# and the repo-local settings that could make git miss an edit are overridden (see
+# Daemon.git_flags: trustctime, checkStat, fsmonitor), submodule changes are never
+# ignored (--ignore-submodules=none beats diff.ignoreSubmodules and the
+# .gitmodules "ignore" setting). The only things read from the dev's own config
+# are core.excludesFile and core.attributesFile (see Daemon.user_path_config);
+# filters (LFS, clean/smudge) are not applied, as the global config that declares
+# them is not read. A repo-local config can still change what git calls binary or
+# how it handles line endings (core.autocrlf, .gitattributes).
+DIFF_FLAGS = (
+    "--no-color", "--no-ext-diff", "--no-textconv", "--full-index",
+    "--diff-algorithm=myers", "--no-indent-heuristic", "--src-prefix=a/",
+    "--dst-prefix=b/", "-U3", "--inter-hunk-context=0", "--ignore-submodules=none",
+)  # fmt: skip
+
+
+GIT_ENV = {
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    # paths are literal, not pathspecs: no globs ([id].tsx), no :magic
+    "GIT_LITERAL_PATHSPECS": "1",
+}
+
+
+def stat_key(st: os.stat_result) -> tuple:
+    """What an edit moves: inode, size, mtime, ctime (a same-size edit with the
+    mtime put back still moves it) and mode."""
+    return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_mode)
+
+
+def fingerprint(path: Path) -> tuple[dict | None, tuple | None, int]:
+    """What get_diff needs of an untracked file, read in chunks, nothing written:
+    a fingerprint of its content (and exec bit / link target), whether git would
+    call it binary (a NUL in the first 8000 bytes), and its line count. Returns
+    (info, stat key of what was read, time of the read in ns). info is None for
+    anything but a file or a symlink; OSError when it cannot be read.
+
+    The file is opened without following links or blocking, and checked to be the
+    regular file that was lstat-ed (not swapped for a fifo or a symlink since); at
+    most its fstat size is read, so one growing under us cannot run away."""
+    st = path.lstat()
+    if stat.S_ISLNK(st.st_mode):
+        target = os.readlink(path)
+        info = {"fingerprint": f"link:{target}", "binary": False, "added": 1, "size": 0}
+        return info, None, 0
+    if not stat.S_ISREG(st.st_mode):
+        return None, None, 0
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as fh:
+        fst = os.fstat(fd)
+        now = time.time_ns()
+        if not stat.S_ISREG(fst.st_mode) or (fst.st_ino, fst.st_dev) != (
+            st.st_ino, st.st_dev,
+        ):  # fmt: skip
+            raise OSError(errno.ESTALE, "changed while reading")
+        sha, lines, last, size, binary = hashlib.sha256(), 0, b"", 0, False
+        while size < fst.st_size and (
+            chunk := fh.read(min(1 << 20, fst.st_size - size))
+        ):
+            if size < 8000 and b"\0" in chunk[: 8000 - size]:
+                binary = True
+            size += len(chunk)
+            sha.update(chunk)
+            lines += chunk.count(b"\n")
+            last = chunk[-1:]
+    if size and last != b"\n":
+        lines += 1
+    mode = "x" if fst.st_mode & 0o100 else "-"
+    info = {"fingerprint": f"{mode}:{sha.hexdigest()}", "binary": binary,
+            "added": 0 if binary else lines, "size": size}  # fmt: skip
+    return info, stat_key(fst), now
+
+
+def shown_path(path: str) -> str:
+    """A path as the hub and the page see it. Paths are carried as os.fsdecode
+    gives them (invalid UTF-8 bytes as lone surrogates), so they go back to the
+    disk byte for byte; for JSON the bad bytes become U+FFFD. A file is asked
+    for by that shown name (see rpc_get_diff), which stays stable across calls."""
+    return path.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def shown_file(f: dict) -> dict:
+    """A file entry with its paths made safe for JSON."""
+    out = {**f, "path": shown_path(f["path"])}
+    if "old_path" in f:
+        out["old_path"] = shown_path(f["old_path"])
+    return out
+
+
+def fingerprint_retrying(path: Path) -> tuple[dict | None, tuple | None, int]:
+    """fingerprint(), once more when the file was swapped under it (ESTALE): an
+    editor's atomic save does that, and is no reason to refuse the request."""
+    try:
+        return fingerprint(path)
+    except OSError as e:
+        if e.errno != errno.ESTALE:
+            raise
+        return fingerprint(path)
+
+
+def stat_fingerprint(st: os.stat_result) -> dict:
+    """A file too big to read: identified by its stat key, which any edit moves
+    (a touch too). Counted as unknown (0 lines), shown as over_cap."""
+    key = ":".join(map(str, stat_key(st)))
+    return {"fingerprint": f"stat:{key}", "binary": False, "added": 0,
+            "size": st.st_size, "unread": True}  # fmt: skip
+
+
+async def run_limited(
+    argv: list[str],
+    env: dict | None,
+    limit: int,
+    on_chunk=None,
+    stdin: bytes | None = None,
+) -> tuple[int, bytes, str, bool]:
+    """run_cmd with a ceiling on stdout: chunks go to on_chunk (a hash update)
+    or are buffered; past `limit` bytes the whole session is killed and
+    overflow is True. stderr keeps its last 64 KiB. Returns (rc, out, err,
+    overflow); out is empty with on_chunk. `stdin` is fed to the process, if given."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv, env=env,
+        stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )  # fmt: skip
+    buf, total, overflow = bytearray(), 0, False
+    err = bytearray()
+
+    async def drain_err():
+        while chunk := await proc.stderr.read(1 << 16):
+            err.extend(chunk)
+            del err[: -(1 << 16)]
+
+    async def feed():
+        try:
+            proc.stdin.write(stdin)
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the process exited (or was killed) before reading it all
+
+    err_task = asyncio.create_task(drain_err())
+    feed_task = asyncio.create_task(feed()) if stdin is not None else None
+    try:
+        while chunk := await proc.stdout.read(1 << 16):
+            total += len(chunk)
+            if total > limit:
+                overflow = True
+                agy_runner.kill_session(proc.pid)
+                break
+            if on_chunk:
+                on_chunk(chunk)
+            else:
+                buf.extend(chunk)
+        await err_task
+        await proc.wait()
+    except BaseException:
+        agy_runner.kill_session(proc.pid)
+        err_task.cancel()
+        await proc.wait()
+        with contextlib.suppress(BaseException):  # reap it: no "never retrieved"
+            await err_task
+        raise
+    finally:
+        if feed_task:
+            feed_task.cancel()
+    return proc.returncode, bytes(buf), err.decode(errors="replace"), overflow
+
+
 async def run_cmd(
-    argv: list[str], env: dict | None = None, cwd: str | None = None
-) -> tuple[int, str, str]:
+    argv: list[str], env: dict | None = None, cwd: str | None = None,
+    errors: str = "replace",
+) -> tuple[int, str, str]:  # fmt: skip
     """Run a command in its own session; cancelling (a timeout, SIGTERM) kills
     everything in that session."""
     proc = await asyncio.create_subprocess_exec(
@@ -356,7 +562,7 @@ async def run_cmd(
         agy_runner.kill_session(proc.pid)
         await proc.wait()
         raise
-    return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+    return proc.returncode, out.decode(errors=errors), err.decode(errors="replace")
 
 
 def utc_now() -> str:
@@ -440,12 +646,20 @@ def read_file(path: Path) -> str | None:
 
 
 class Daemon:
+    racy_test_s: float | None = None  # see main
+
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.uri, self.name, self.port = endpoint(cfg["url"])
         self.token: str | None = None
         self.sent: dict[str, dict] = {}  # board key -> the board last sent
         self.health: dict | None = None
+        # get_diff: untracked path -> (stat key, fingerprint info)
+        # (LRU, 4096 entries; entries of a worktree not seen in a request are dropped)
+        self.fp_lock = threading.Lock()  # fp_cache is used from to_thread workers
+        self.fp_cache: collections.OrderedDict[str, tuple[tuple, dict]] = (
+            collections.OrderedDict()
+        )
         self.need_full = True  # the next snapshot must be full (a new connection)
         self.export_start = 0  # where the next export starts (tk-export: resume)
         self.schema = Schema(json.loads(Path(cfg.get("schema", SCHEMA)).read_text()))
@@ -479,6 +693,7 @@ class Daemon:
             "resolve_nocode": functools.partial(self.rpc_ship, "resolve_nocode"),
             "resolve_ticket": functools.partial(self.rpc_ship, "resolve_ticket"),
             "verify_landed": self.rpc_verify_landed,
+            "get_diff": self.rpc_get_diff,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -657,6 +872,7 @@ class Daemon:
         tickets = json.loads(out).get("tickets") or []
         found = next((t for t in tickets if t.get("nn") == nn), None)
         if found is None:
+            # the hub maps this text to a 404 (app.py diff_failure_status)
             raise RpcRefused(f"no ticket {nn} on board {board['key']}")
         return found
 
@@ -942,6 +1158,362 @@ class Daemon:
         if rc in AGENT_EXITS:
             result["reason"] = AGENT_EXITS[rc]
         return result
+
+    async def git_run(self, wt: str, *args: str) -> tuple[int, str, str]:
+        """Read-only git in the ticket's worktree. GIT_OPTIONAL_LOCKS=0 keeps
+        git from refreshing (writing) the index on the way; no system or user
+        config, so nothing of the dev's changes the output (or the hash). For
+        output known to be small; anything that may be big goes through
+        git_limited. Run get_diff's way (see git_flags)."""
+        return await run_cmd(
+            ["git", "-C", wt, *self.git_flags(), *args], env={**os.environ, **GIT_ENV}
+        )
+
+    def git_flags(self) -> list[str]:
+        """`-c` flags of every get_diff git call. core.bigFileThreshold bounds what git
+        loads whole (past it a file is binary to diff: "Binary files differ", with
+        the full-index blob ids still moving the hash), the same on every call so
+        the listings and the hash agree. The repo-local settings that make git skip
+        reading a file it thinks unchanged are pinned to git's defaults (trustctime,
+        checkStat) or off (fsmonitor), so a same-size edit with the mtime put back
+        cannot hide."""
+        n = self.cfg["diff_max_untracked_file_bytes"]
+        return [
+            "-c", f"core.bigFileThreshold={n}",
+            "-c", "core.trustctime=true",
+            "-c", "core.checkStat=default",
+            "-c", "core.fsmonitor=false",
+        ]  # fmt: skip
+
+    async def user_path_config(self, wt: str, key: str) -> list[str]:
+        """`-c <key>=<path>` for a git call, as the dev's own git config says
+        (read-only `git config --get`; the calls run without that config): used
+        for core.excludesFile (ls-files: what they gitignore globally stays hidden)
+        and core.attributesFile (check-attr: their global -diff/binary rules still
+        apply). Nothing when unset."""
+        rc, out, _ = await run_cmd(
+            ["git", "-C", wt, "config", "--type=path", "--get", key],
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            errors="surrogateescape",  # a non-UTF-8 path goes back byte for byte
+        )
+        path = out.strip()
+        return ["-c", f"{key}={path}"] if rc == 0 and path else []
+
+    async def git_limited(
+        self, wt: str, args: tuple, limit: int, on_chunk=None,
+        stdin: bytes | None = None, errors: str = "replace",
+    ) -> tuple[int, str, str, bool]:  # fmt: skip
+        """git with stdout capped at `limit` bytes (see run_limited): the last
+        item is True when it was cut off and killed. Output is decoded with
+        `errors`: "replace" for text that is shown, "surrogateescape" for file
+        names, which must go back to the disk byte for byte."""
+        rc, out, err, over = await run_limited(
+            ["git", "-C", wt, *self.git_flags(), *args],
+            {**os.environ, **GIT_ENV}, limit, on_chunk, stdin,
+        )  # fmt: skip
+        return rc, out.decode(errors=errors), err, over
+
+    async def git_diff(
+        self, wt: str, *args: str, stdin: bytes | None = None, config: tuple = ()
+    ) -> str:
+        """Small output (names, numstat, ls-files), bounded by diff_max_output_bytes:
+        a ticket with more than that is refused, not buffered."""
+        rc, out, err, over = await self.git_limited(
+            wt, (*config, *args), self.cfg["diff_max_output_bytes"], stdin=stdin,
+            errors="surrogateescape",
+        )  # fmt: skip
+        if over:
+            raise RpcRefused(
+                f"git {args[0]} output is too large (over "
+                f"{self.cfg['diff_max_output_bytes']} bytes): too many changes"
+            )
+        if rc != 0:
+            raise RpcRefused(f"git {args[0]} failed (exit {rc}): {err.strip()[-200:]}")
+        return out
+
+    def diff_limit(self) -> int:
+        """Bytes of one file's diff worth reading: past diff_cap_chars chars (at most
+        4 bytes each) it is over_cap anyway; never past diff_max_output_bytes."""
+        return min(self.cfg["diff_cap_chars"] * 4, self.cfg["diff_max_output_bytes"])
+
+    async def untracked_diff(self, wt: str, path: str) -> str | None:
+        """One untracked file's diff as an addition, None when over the limit.
+        --no-index exits 1 when the files differ; with anything on stderr that is a
+        failure, not a diff."""
+        rc, out, err, over = await self.git_limited(
+            wt,
+            ("diff", *DIFF_FLAGS, "--no-index", "--", "/dev/null", path),
+            self.diff_limit(),
+        )
+        if over:
+            return None
+        if rc not in (0, 1) or (rc == 1 and err.strip()):
+            raise RpcRefused(
+                f"git diff of {shown_path(path)} failed (exit {rc}): {err.strip()[-200:]}"
+            )
+        return out
+
+    def untracked_info(self, path: Path, budget: int) -> tuple[dict | None, int]:
+        """fingerprint(path) within the budget of bytes left to read this request,
+        and the bytes it is charged. Whether a file is read or stat-fingerprinted (over
+        diff_max_untracked_file_bytes, or past the budget) depends on sizes alone,
+        decided before the cache is asked, so diff_hash does not drift with cache
+        state: the cache (same stat key, and not racily clean) only saves the
+        read, a hit is charged like one. A touch on a stat-fingerprinted file moves
+        its hash."""
+        st = path.lstat()
+        if not stat.S_ISREG(st.st_mode):
+            return fingerprint_retrying(path)[0], 0
+        if (
+            st.st_size > self.cfg["diff_max_untracked_file_bytes"]
+            or st.st_size > budget
+        ):
+            return stat_fingerprint(st), 0
+        key = os.fspath(path)
+        with self.fp_lock:
+            hit = self.fp_cache.get(key)
+            if hit and hit[0] == stat_key(st):
+                self.fp_cache.move_to_end(key)
+                return hit[1], st.st_size
+        info, fkey, now = fingerprint_retrying(path)
+        if info is not None and fkey and now - max(fkey[2], fkey[3]) > self.racy_ns():
+            with self.fp_lock:
+                self.fp_cache[key] = (fkey, info)
+                self.fp_cache.move_to_end(key)
+                while len(self.fp_cache) > 4096:
+                    self.fp_cache.popitem(last=False)
+        return info, st.st_size
+
+    def racy_ns(self) -> float:
+        """The racy window in ns: configured, never under DIFF_RACY_FLOOR_S (only
+        the test key goes lower)."""
+        if self.racy_test_s is not None:
+            return self.racy_test_s * 1e9
+        return max(self.cfg["diff_racy_window_s"], DIFF_RACY_FLOOR_S) * 1e9
+
+    async def file_diff(
+        self, wt: str, tracked: tuple, rev: tuple, f: dict, untracked: bool,
+        over_cap: set[str],
+    ) -> str | None:  # fmt: skip
+        """One text file's diff, None when it is over the cap: decided from sizes and
+        line counts before git runs where possible, else by the output limit."""
+        path = f["path"]
+        if untracked:
+            if path in over_cap:
+                return None
+            try:
+                return await self.untracked_diff(wt, path)
+            except RpcRefused:
+                if not (Path(wt) / path).exists():
+                    # the hub maps this text to a 404 (app.py diff_failure_status)
+                    raise RpcRefused(
+                        f"{shown_path(path)} is gone from the worktree"
+                    ) from None
+                raise
+        # a diff has at least two chars (a sign and a newline) per changed line
+        if (f["added"] + f["removed"]) * 2 > self.cfg["diff_cap_chars"]:
+            return None
+        paths = [f["old_path"], path] if "old_path" in f else [path]
+        rc, out, err, over = await self.git_limited(
+            wt, (*tracked, *rev, *paths), self.diff_limit()
+        )
+        if over:
+            return None
+        if rc != 0:
+            raise RpcRefused(f"git diff failed (exit {rc}): {err.strip()[-200:]}")
+        return out
+
+    async def apply_binary_attrs(self, wt: str, files: dict, untracked: list) -> None:
+        """Untracked files git would treat as binary by .gitattributes (-diff, or the
+        `binary` macro) are marked so: one read-only `git check-attr --stdin` over
+        them (a tracked file's numstat already says). Their added count is 0."""
+        paths = [p for p in untracked if p in files and not files[p].get("nested_repo")]
+        if not paths:
+            return
+        out = await self.git_diff(
+            wt, "check-attr", "-z", "--stdin", "diff", "binary",
+            stdin=b"".join(os.fsencode(p) + b"\0" for p in paths),
+            config=tuple(await self.user_path_config(wt, "core.attributesFile")),
+        )  # fmt: skip
+        parts = out.split("\0")
+        for path, attr, value in zip(
+            parts[0::3], parts[1::3], parts[2::3], strict=False
+        ):
+            f = files.get(path)
+            if f and (
+                (attr == "diff" and value == "unset")
+                or (attr == "binary" and value == "set")
+            ):
+                f["binary"], f["added"] = True, 0
+
+    async def rpc_get_diff(self, ws, params: dict) -> dict:
+        """The ticket's change: its worktree's uncommitted diff against its base
+        (untracked files as additions). Without `file`: data.files (path, status
+        M/A/D/R, old_path on R, additions, deletions, binary; nested_repo on an
+        untracked nested repo, listed with a trailing slash) and data.diff_hash;
+        with it, that file's unified diff in data.diff, or a data.stub ("binary",
+        "over_cap", "nested_repo") instead. Only reads: diff, ls-files and
+        rev-parse, no add, no index write."""
+        board, nn = self.board(params), params["nn"]
+        ticket = await self.row(board, nn)
+        wt, base = ticket.get("worktree"), ticket.get("base")
+        if not wt or not Path(wt).is_dir():
+            # the hub maps these texts to a 409 (app.py diff_failure_status)
+            raise RpcRefused(f"ticket {nn} has no worktree to diff")
+        if not base:
+            raise RpcRefused(f"ticket {nn} has no base to diff against")
+        if not re.fullmatch(r"[0-9a-f]{7,64}", base):
+            raise RpcRefused(f"ticket {nn}'s base {base[:40]!r} is not a commit sha")
+        tracked = ("diff", *DIFF_FLAGS, "-M")
+        rev = ("--end-of-options", base, "--")
+        # the listings take no -U/context flag: that would add the whole patch
+        listing = (
+            "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+            "--ignore-submodules=none", "-M",
+        )  # fmt: skip
+        names = (await self.git_diff(wt, *listing, "--name-status", "-z", *rev)).split(
+            "\0"
+        )
+        nums = (await self.git_diff(wt, *listing, "--numstat", "-z", *rev)).split("\0")
+        files: dict[str, dict] = {}
+        i = 0
+        while i < len(names) and names[i]:
+            code = names[i][0]
+            if code in "RC":
+                old, path = names[i + 1], names[i + 2]
+                i += 3
+            else:
+                old, path = None, names[i + 1]
+                i += 2
+            f = {"path": path, "status": {"T": "M", "C": "A", "U": "M"}.get(code, code)}
+            if old and code == "R":
+                f["old_path"] = old
+            files[path] = f
+        i = 0
+        while i < len(nums) and nums[i]:
+            add, rem, path = nums[i].split("\t", 2)
+            i += 1
+            if not path:  # a rename: old and new paths follow
+                path = nums[i + 1]
+                i += 2
+            f = files.get(path)
+            if f is not None:
+                f["binary"] = add == "-"
+                f["added"] = 0 if add == "-" else int(add)
+                f["removed"] = 0 if rem == "-" else int(rem)
+        tracked_digest = hashlib.sha256()
+        rc, _, err, over = await self.git_limited(
+            wt, (*tracked, *rev), self.cfg["diff_max_hash_bytes"],
+            tracked_digest.update,
+        )  # fmt: skip
+        if over:
+            raise RpcRefused(
+                f"the tracked diff is too large to hash (over "
+                f"{self.cfg['diff_max_hash_bytes']} bytes)"
+            )
+        if rc != 0:
+            raise RpcRefused(f"git diff failed (exit {rc}): {err.strip()[-200:]}")
+        # the tracked diff enters the hash as a fixed-size, tagged digest, so no
+        # bytes of it can pass for (or merge with) the entries that follow
+        digest = hashlib.sha256(b"tracked\0" + tracked_digest.digest())
+        over_cap: set[str] = set()  # untracked files known to exceed the cap unread
+        untracked = sorted(
+            filter(
+                None,
+                (
+                    await self.git_diff(
+                        wt,
+                        "ls-files",
+                        "--others",
+                        "--exclude-standard",
+                        "-z",
+                        config=tuple(
+                            await self.user_path_config(wt, "core.excludesFile")
+                        ),
+                    )
+                ).split("\0"),
+            )
+        )
+        budget = self.cfg["diff_max_untracked_bytes"]
+        for path in untracked:
+            if path.endswith("/"):  # a nested repo: its HEAD stands for its content
+                rc, head, _ = await self.git_run(wt, "-C", path, "rev-parse", "HEAD")
+                digest.update(
+                    b"nested\0" + os.fsencode(path)
+                    + f"\0{head.strip() if rc == 0 else '?'}\0".encode()
+                )  # fmt: skip
+                files[path] = {"path": path, "status": "A", "binary": False,
+                               "added": 0, "removed": 0, "nested_repo": True}  # fmt: skip
+                continue
+            try:
+                info, read = await asyncio.to_thread(
+                    self.untracked_info, Path(wt) / path, budget
+                )
+                budget -= read
+            except FileNotFoundError:
+                continue  # gone since ls-files: not part of the change any more
+            except OSError as e:
+                raise RpcRefused(
+                    f"cannot read untracked {shown_path(path)}: {e.strerror}"
+                ) from e
+            if info is None:
+                continue  # a fifo, socket...: nothing to show, nothing to read
+            digest.update(
+                b"untracked\0" + os.fsencode(path)
+                + f"\0{info['fingerprint']}\0".encode()
+            )  # fmt: skip
+            files[path] = {"path": path, "status": "A", "binary": info["binary"],
+                           "added": info["added"], "removed": 0}  # fmt: skip
+            if info["size"] > self.cfg["diff_cap_chars"] or info.get("unread"):
+                over_cap.add(path)
+        seen = {os.fspath(Path(wt) / p) for p in untracked}
+        prefix = os.fspath(Path(wt)) + os.sep
+        with self.fp_lock:  # gone, or no longer untracked
+            for key in [k for k in self.fp_cache if k.startswith(prefix)]:
+                if key not in seen:
+                    self.fp_cache.pop(key, None)
+        await self.apply_binary_attrs(wt, files, untracked)
+        data = {"base": base, "diff_hash": f"sha256:{digest.hexdigest()}"}
+        want = params.get("file")
+        if want is None:
+            listed = sorted(files.values(), key=lambda f: f["path"])
+            cap = self.cfg["diff_max_files"]
+            data["files"] = [shown_file(f) for f in listed[:cap]]
+            data["truncated"] = len(listed) > cap
+            data["total_files"] = len(listed)
+            return {"ok": True, "exit_code": 0, "output_tail": "", "data": data}
+        # `want` is a name as listed (shown_path): the real path where it is valid
+        # UTF-8; otherwise the file whose shown name it is, refused when several
+        # share it (names differing only in invalid bytes)
+        f = files.get(want)
+        if f is None:
+            named = [files[p] for p in sorted(files) if shown_path(p) == want]
+            if len(named) > 1:
+                # the hub maps this text to a 409 (app.py diff_failure_status)
+                raise RpcRefused(
+                    f"{want} is ambiguous in ticket {nn}'s diff: "
+                    f"{len(named)} files share that shown name"
+                )
+            f = named[0] if named else None
+        if f is None:
+            # the hub maps this text to a 404 (app.py diff_failure_status)
+            raise RpcRefused(f"{want} is not in ticket {nn}'s diff")
+        path = f["path"]
+        data |= shown_file(f)
+        data["diff"], data["stub"] = "", None
+        if f.get("nested_repo"):
+            data["stub"] = "nested_repo"
+        elif f["binary"]:
+            data["stub"] = "binary"
+        else:
+            text = await self.file_diff(
+                wt, tracked, rev, f, path in untracked, over_cap
+            )
+            if text is None or len(text) > self.cfg["diff_cap_chars"]:
+                data["stub"] = "over_cap"
+            else:
+                data["diff"] = text
+        return {"ok": True, "exit_code": 0, "output_tail": "", "data": data}
 
     async def rpc_set_archived(self, ws, params: dict) -> dict:
         key, flag = params.get("board_key"), params.get("archived")
@@ -1502,7 +2074,11 @@ class Daemon:
             await asyncio.sleep(delay)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    # Test-only (not in the README): the racy window, bypassing its floor.
+    parser.add_argument("--diff-racy-window-test-s", type=float, help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
     logging.basicConfig(
         stream=sys.stderr,
         level=logging.INFO,
@@ -1513,6 +2089,7 @@ def main() -> int:
     try:
         cfg = load_config(Path.home())
         daemon = Daemon(cfg)
+        daemon.racy_test_s = args.diff_racy_window_test_s
     except (OSError, ValueError) as e:
         log.error("bad config: %s", e)
         return 1

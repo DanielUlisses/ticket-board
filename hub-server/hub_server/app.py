@@ -357,6 +357,53 @@ def create_app(
             "events": hub.store.boards.activity(board_key, nn),
         }
 
+    def diff_failure_status(reason: str) -> int:
+        """The HTTP status of a failed get_diff, from its reason: the hub's
+        "timed out after Ns" and "devbox disconnected", the daemon's refusals (daemon
+        `rpc_get_diff` and `row`, which comment each string matched here: keep them
+        in step)."""
+        if reason.startswith("timed out"):
+            return 504
+        if (
+            " is not in ticket " in reason
+            or " is gone from the worktree" in reason
+            or reason.startswith("no ticket ")
+        ):
+            return 404
+        if (
+            "has no worktree" in reason
+            or " is ambiguous in ticket " in reason
+            or "has no base" in reason
+            or reason == "devbox disconnected"
+        ):
+            return 409
+        return 502
+
+    @app.get("/api/boards/{board_key:path}/tickets/{nn}/diff")
+    async def ticket_diff(board_key: str, nn: str, file: str | None = None):
+        """get_diff on the ticket's devbox, answered with the daemon's result: the
+        file list and diff_hash, or with ?file= that file's diff. Read-only; the
+        result goes to this caller, not to /ws/ui. 404 unknown board, ticket or
+        file (not in the diff), 409 devbox offline or gone mid-request, or the ticket has no worktree
+        (or base) to diff, 504 timed out, 502 any other refusal or failure."""
+        find_ticket(board_key, nn)
+        devbox = hub.store.boards.get(board_key)["devbox"]
+        waiter = asyncio.get_running_loop().create_future()
+        params = {"board_key": board_key, "nn": nn}
+        if file:
+            params["file"] = file
+        try:
+            await hub.send_rpc(
+                devbox, "get_diff", params, board_key=board_key, nn=nn, waiter=waiter
+            )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        result = await waiter
+        if not result.get("ok"):
+            reason = result.get("reason") or "get_diff failed"
+            raise HTTPException(diff_failure_status(reason), reason)
+        return {"board_key": board_key, "nn": nn, **(result.get("data") or {})}
+
     @app.get("/api/boards/{board_key:path}/tickets/{nn}/report")
     async def ticket_report(board_key: str, nn: str):
         found = find_ticket(board_key, nn)

@@ -64,7 +64,7 @@ Per component:
   `synthesis_started` / `synthesis_finished` / `synthesis_failed`, `rpc_result`,
   `devbox_status`.
 - **hub REST** (`/api`): response bodies are `$defs/rest_boards`, `rest_report`,
-  `rest_activity`, `rest_scan`, `rest_archive`, `rest_set_policy`, `rest_refine`
+  `rest_activity`, `rest_diff`, `rest_scan`, `rest_archive`, `rest_set_policy`, `rest_refine`
   (`POST /api/boards/{key}/tickets/{nn}/comment`, `{comment}`), `rest_set_task_done`
   (`POST …/tickets/{nn}/tasks`, `{text, done}`), and `rest_error` for any error.
 

@@ -341,6 +341,18 @@ describe("ticket actions", () => {
       expect(events).toEqual([moved]);
     });
 
+    it("diff gives rest_diff as is, asking for one file with ?file=", async () => {
+      const list = {
+        board_key: KEY, nn: "25", base: "abc", diff_hash: "sha256:ff",
+        files: [{ path: "a b.ts", status: "M", added: 1, removed: 0, binary: false }],
+      };
+      const client = answering("rest_diff", list);
+      expect(await client.diff(KEY, "25")).toEqual(list);
+      const one = { ...list, ...list.files[0], files: undefined, diff: "@@ -1 +1 @@\n+x\n", stub: null };
+      const single = answering("rest_diff", JSON.parse(JSON.stringify(one)));
+      await single.diff(KEY, "25", "a b.ts");
+    });
+
     it("report gives rest_report as is, a missing body as null", async () => {
       const body = { board_key: KEY, nn: "27", title: "Hub settings page", full_report_md: null, body: null };
       const client = answering("rest_report", body);

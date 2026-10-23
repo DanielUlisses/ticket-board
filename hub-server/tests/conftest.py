@@ -22,6 +22,7 @@ REST_DEFS = [
     ("GET", re.compile(r"^/api/boards$"), "rest_boards"),
     ("GET", re.compile(r"^/api/boards/.+/tickets/[^/]+/report$"), "rest_report"),
     ("GET", re.compile(r"^/api/boards/.+/tickets/[^/]+/activity$"), "rest_activity"),
+    ("GET", re.compile(r"^/api/boards/.+/tickets/[^/]+/diff$"), "rest_diff"),
     ("POST", re.compile(r"^/api/scan$"), "rest_scan"),
     ("POST", re.compile(r"^/api/boards/.+/tickets/[^/]+/action$"), "rest_action"),
     ("POST", re.compile(r"^/api/boards/.+/frontier$"), "rest_action"),
