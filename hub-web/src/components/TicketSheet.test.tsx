@@ -18,6 +18,21 @@ const REPORT: ReportResponse = {
   body: "# Ticket body\n\nDo the thing.\n\n```py\nprint('hi')\n```",
 };
 
+function stubClient(): DetailApi {
+  return {
+    activity: async () => [],
+    report: async () => REPORT,
+    launch: async () => {},
+    say: async () => null,
+    paneTail: async () => {},
+    proposeMemory: async () => true,
+    ship: async () => true,
+    resolveNoCode: async () => true,
+    refine: async () => true,
+    setTaskDone: async () => true,
+  };
+}
+
 function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailApi> = {}) {
   const client: DetailApi = {
     activity: vi.fn().mockResolvedValue([
@@ -122,7 +137,7 @@ describe("TicketSheet", () => {
     setup();
     const mem = within(sheet()).getByRole("region", { name: "Project Memory" });
     expect(within(mem).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "`tk.sh` verbs run with the repo's main checkout as cwd, never a worktree.",
+      "tk.sh verbs run with the repo's main checkout as cwd, never a worktree.",
       "Shell scripts stay shellcheck-clean; logs go to stderr, data to stdout.",
     ]);
   });
@@ -163,7 +178,7 @@ describe("TicketSheet", () => {
   it("an injected script or HTML in any field renders inert", () => {
     const store = createStore();
     const data = boardsResponse();
-    const evil = `<script>window.__pwned=1</script><img src=x onerror="window.__pwned=1">`;
+    const evil = `visible-marker <script>window.__pwned=1</script><img src=x onerror="window.__pwned=1"><a href="x" onclick="window.__pwned=1">c</a> [x](javascript:window.__pwned=1)`;
     const board = data.boards.find((b) => b.key === KEY)!;
     board.project_memory = `1. ${evil}`;
     board.tickets[0] = {
@@ -177,23 +192,75 @@ describe("TicketSheet", () => {
     const { container } = render(
       <StoreProvider store={store}>
         <TicketSheet
-          client={{
-            activity: async () => [],
-            report: async () => REPORT,
-            launch: async () => {},
-            say: async () => null,
-            paneTail: async () => {},
-            proposeMemory: async () => true,
-            ship: async () => true,
-            resolveNoCode: async () => true,
-            refine: async () => true,
-            setTaskDone: async () => true,
-          }}
+          client={stubClient()}
         />
       </StoreProvider>,
     );
-    expect(container.ownerDocument.querySelector("script, img[onerror]")).toBeNull();
-    expect(screen.getAllByText(evil).length).toBeGreaterThan(0);
+    expect(container.ownerDocument.querySelector("script, iframe, [onerror], [onclick]")).toBeNull();
+    expect(container.ownerDocument.querySelector('a[href^="javascript:"]')).toBeNull();
+    // the fields still rendered, as inert text
+    expect(within(sheet()).queryAllByRole("link")).toHaveLength(0);
+    expect(sheet().textContent).toContain("visible-marker");
+  });
+
+  it("keeps paragraphs and single newlines in summary and notes", () => {
+    const store = createStore();
+    const data = boardsResponse();
+    data.boards.find((b) => b.key === KEY)!.tickets[0] = {
+      ...data.boards.find((b) => b.key === KEY)!.tickets[0],
+      summary: "First para.\n\nSecond para.",
+      reviewer_notes: "line one\nline two",
+    };
+    store.load(data);
+    store.openTicket(KEY, "01");
+    render(
+      <StoreProvider store={store}>
+        <TicketSheet client={stubClient()} />
+      </StoreProvider>,
+    );
+    const first = within(sheet()).getByText("First para.");
+    expect(first.tagName).toBe("P");
+    expect(within(sheet()).getByText("Second para.").tagName).toBe("P");
+    expect(first).not.toBe(within(sheet()).getByText("Second para."));
+    const notes = within(sheet()).getByText(/line one/);
+    expect(notes.tagName).toBe("P");
+    expect(notes.textContent).toBe("line one\nline two"); // CSS (.compact p) keeps the break visible
+  });
+
+  it("renders Markdown in summary, notes, checklist and memory (code, no literal backticks)", () => {
+    const store = createStore();
+    const data = boardsResponse();
+    const board = data.boards.find((b) => b.key === KEY)!;
+    board.project_memory = "- run `bin/devbox-config` first";
+    board.tickets[0] = {
+      ...board.tickets[0],
+      summary: "Use `$DEVBOX_CLIENTS` here",
+      reviewer_notes: "Check `jq .a` and **bold**",
+      manual_tasks: [
+        { text: "Run `make test`", done: true, source: "synthesis" },
+        { text: "Open [docs](https://example.com)", done: false, source: "synthesis" },
+      ],
+    };
+    store.load(data);
+    store.openTicket(KEY, "01");
+    render(
+      <StoreProvider store={store}>
+        <TicketSheet client={stubClient()} />
+      </StoreProvider>,
+    );
+    const s = sheet();
+    for (const code of ["bin/devbox-config", "$DEVBOX_CLIENTS", "jq .a", "make test"]) {
+      expect(within(s).getByText(code).tagName).toBe("CODE");
+    }
+    expect(s.textContent).not.toContain("`");
+    expect(within(s).getByText("bold").tagName).toBe("STRONG");
+    expect(within(s).getByRole("link", { name: "docs" })).toHaveAttribute("href", "https://example.com");
+    // ticking state still mirrors the data, and the label still names the checkbox
+    const boxes = within(within(s).getByRole("region", { name: "Manual Validation Checklist" })).getAllByRole("checkbox");
+    const checklist = within(s).getByRole("region", { name: "Manual Validation Checklist" });
+    expect(within(checklist).getByRole("checkbox", { name: "Run make test" })).toBeChecked();
+    expect(within(checklist).getByRole("checkbox", { name: "Open docs" })).not.toBeChecked();
+    expect(boxes.length).toBe(2);
   });
 });
 
@@ -330,7 +397,7 @@ describe("report modal", () => {
   });
 
   it("strips script and HTML injection from both documents", async () => {
-    const evil = `<script>window.__pwned=1</script><img src=x onerror="window.__pwned=1"><a href="javascript:alert(1)">x</a>`;
+    const evil = `visible-marker <script>window.__pwned=1</script><img src=x onerror="window.__pwned=1"><a href="javascript:alert(1)">x</a>`;
     setup([KEY, "01"], { report: async () => ({ ...REPORT, full_report_md: `# R\n\n${evil}`, body: `# B\n\n${evil}` }) });
     fireEvent.click(within(sheet()).getByRole("button", { name: "⤢ Full Review & Reasoning" }));
     const m = await screen.findByRole("dialog", { name: "Full Review & Reasoning" });

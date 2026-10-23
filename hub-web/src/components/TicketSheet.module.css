@@ -93,7 +93,6 @@
   margin: 0 0 8px;
   font-size: 13px;
   line-height: 1.45;
-  white-space: pre-line;
 }
 .notes {
   margin: 0 0 8px;
@@ -219,16 +218,16 @@
   font-size: 12.5px;
   line-height: 1.5;
 }
-.list li[data-done="true"] span {
+.list li[data-done="true"] > div {
   text-decoration: line-through;
   color: var(--text-muted);
 }
-.list label {
+.list li[data-done] {
   display: flex;
   gap: 8px;
   align-items: flex-start;
 }
-.list li:has(label) {
+.list li:has(.task) {
   display: flex;
   gap: 8px;
   align-items: flex-start;
@@ -240,4 +239,33 @@
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
+}
+.propose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.propose .h {
+  margin: 0;
+}
+.proposeText {
+  box-sizing: border-box;
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.proposeText::placeholder {
+  font-family: var(--font-mono);
+}
+.proposeBtn {
+  align-self: flex-end;
+}
+
+.task {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
 }

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { HubClient } from "../api/client";
 import { COLUMN_META } from "../columns";
 import type { ActivityEvent, Board, Column, Ticket } from "../protocol/types";
 import { Glyph } from "./Glyph";
 import { LaunchControl } from "./LaunchControl";
+import { Markdown } from "./Markdown";
 import { PaneTail } from "./PaneTail";
 import { Relay } from "./Relay";
 import { ReportModal } from "./ReportModal";
@@ -86,18 +87,19 @@ function ProposeMemory({ board, ticket, api }: { board: Board; ticket: Ticket; a
     });
   };
   return (
-    <div>
+    <div className={styles.propose}>
       <label className={styles.h} htmlFor="propose-memory">
         Propose to memory
       </label>
       <textarea
         id="propose-memory"
-        rows={2}
+        className={styles.proposeText}
+        rows={3}
         value={text}
         placeholder="A rule for docs/agents/project-memory.md"
         onChange={(e) => setText(e.target.value)}
       />
-      <button type="button" className={styles.action} disabled={busy || !text.trim()} onClick={send}>
+      <button type="button" className={`${styles.action} ${styles.proposeBtn}`} disabled={busy || !text.trim()} onClick={send}>
         Propose to memory
       </button>
     </div>
@@ -182,6 +184,7 @@ function Refine({ board, ticket, api }: { board: Board; ticket: Ticket; api: Det
 
 /** The manual checklist: ticks go to the box's hub-meta and show at once, undone if the hub refuses or the box never confirms. */
 function Checklist({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
+  const taskId = useId();
   // Ticks not confirmed yet (text -> done), dropped once the ticket agrees.
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const tasks = ticket.manual_tasks;
@@ -224,10 +227,17 @@ function Checklist({ board, ticket, api }: { board: Board; ticket: Ticket; api: 
         const done = pending[t.text] ?? t.done;
         return (
           <li key={i} data-done={done ? "true" : "false"}>
-            <label>
-              <input type="checkbox" checked={done} onChange={(e) => tick(t.text, e.target.checked)} />
-              <span>{t.text}</span>
-            </label>
+            <div className={styles.task}>
+              <input
+                type="checkbox"
+                aria-labelledby={`${taskId}-${i}`}
+                checked={done}
+                onChange={(e) => tick(t.text, e.target.checked)}
+              />
+              <div id={`${taskId}-${i}`}>
+                <Markdown compact source={t.text} />
+              </div>
+            </div>
             {t.source === "developer" && (
               <span className={styles.tag} title="Added by you; synthesis never removes it">
                 you
@@ -288,11 +298,17 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
           <section className={styles.card} aria-label="Synthesis">
             <h3 className={styles.h}>Synthesis</h3>
             {ticket.summary ? (
-              <p className={styles.summary}>{ticket.summary}</p>
+              <div className={styles.summary}>
+                <Markdown compact source={ticket.summary} />
+              </div>
             ) : (
               <p className={styles.muted}>No summary yet.</p>
             )}
-            {ticket.reviewer_notes && <p className={styles.notes}>{ticket.reviewer_notes}</p>}
+            {ticket.reviewer_notes && (
+              <div className={styles.notes}>
+                <Markdown compact source={ticket.reviewer_notes} />
+              </div>
+            )}
             <dl className={styles.facts}>
               {ticket.branch && (
                 <>
@@ -324,7 +340,9 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
             ) : (
               <ul className={styles.list}>
                 {memory.map((m, i) => (
-                  <li key={i}>{m}</li>
+                  <li key={i}>
+                    <Markdown compact source={m} />
+                  </li>
                 ))}
               </ul>
             )}
