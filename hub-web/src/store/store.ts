@@ -4,7 +4,7 @@
 // Components read it through `view()` (a cached snapshot, stable between
 // changes, so it plugs into useSyncExternalStore) and never keep their own copy.
 import { COLUMN_META, type Group } from "../columns";
-import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, UiEvent } from "../protocol/types";
+import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, SynthesisEvent, UiEvent } from "../protocol/types";
 
 /** The Stage select and the pills: one filter, over the column groups. */
 export type Stage = "all" | Group;
@@ -122,6 +122,22 @@ function rpcToast(r: RpcResult): Omit<Toast, "id"> {
     return { kind: "warn", text: `launch_ticket #${r.nn ?? "?"}: still running on the box, may still launch; watch the board` };
   const why = r.reason || r.output_tail.trim() || `exit ${r.exit_code ?? "?"}`;
   return { kind: "error", text: `${prefix}failed: ${why}` };
+}
+
+/**
+ * A synthesis event's change to its ticket: running while a backend works (the content
+ * and its backend stay), ok by the backend that wrote the result (the content itself
+ * follows with board_synced), failed with the reason (the last good content stays).
+ */
+function synthesisPatch(e: SynthesisEvent, t: Ticket): Partial<Ticket> {
+  switch (e.type) {
+    case "synthesis_started":
+      return { synthesis_status: "running" };
+    case "synthesis_finished":
+      return { synthesis_status: "ok", synthesis_backend: e.backend ?? t.synthesis_backend, synthesis_error: null };
+    case "synthesis_failed":
+      return { synthesis_status: "failed", synthesis_error: e.error ?? null };
+  }
 }
 
 export function createStore() {
@@ -257,9 +273,25 @@ export function createStore() {
         toast(rpcToast(event));
         return;
       }
-      default:
-        // synthesis_* belong to the ticket sheet and board panel (tickets 17, 18).
+      case "synthesis_started":
+      case "synthesis_finished":
+      case "synthesis_failed": {
+        // nn null is the board brief (ticket 18).
+        const board = event.nn === null ? undefined : state.boards.find((b) => b.key === event.board_key);
+        if (!board?.tickets.some((t) => t.nn === event.nn)) return;
+        set({
+          boards: mapBoards(
+            (b) => b === board,
+            (b) => ({
+              ...b,
+              tickets: b.tickets.map((t) => (t.nn === event.nn ? { ...t, ...synthesisPatch(event, t) } : t)),
+            }),
+          ),
+        });
+        if (event.type === "synthesis_failed")
+          toast({ kind: "error", text: `Synthesis of #${event.nn} failed: ${event.error ?? "no reason given"}` });
         return;
+      }
     }
   }
 

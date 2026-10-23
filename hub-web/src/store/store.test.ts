@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Board, BoardSynced, DevboxStatus, TicketMoved } from "../protocol/types";
+import type { Board, BoardSynced, DevboxStatus, SynthesisEvent, TicketMoved } from "../protocol/types";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { createStore, PENDING_EXPIRY_MS, ticketId } from "./store";
 
@@ -161,6 +161,41 @@ describe("store", () => {
       ]);
       store.dismiss(store.view().toasts[0].id);
       expect(store.view().toasts).toHaveLength(1);
+    });
+
+    const ticketOf = (store: ReturnType<typeof loaded>, key: string, nn: string) =>
+      store.view().allBoards.find((b) => b.key === key)!.tickets.find((t) => t.nn === nn)!;
+
+    it("synthesis_started marks the ticket running, keeping its content and backend", () => {
+      const store = loaded();
+      store.apply(fixture("synthesis-started"));
+      const t = ticketOf(store, "dev-daniel/ticket-skill/tk-hub", "01");
+      expect([t.synthesis_status, t.synthesis_backend]).toEqual(["running", "agy"]);
+      expect(t.summary).toMatch(/^Adds the JSON export verbs/);
+    });
+
+    it("synthesis_finished marks it ok by its backend; the content follows with board_synced", () => {
+      const store = loaded();
+      store.apply(fixture("synthesis-started"));
+      store.apply({ ...fixture<SynthesisEvent>("synthesis-started"), type: "synthesis_finished", backend: "cursor" });
+      const t = ticketOf(store, "dev-daniel/ticket-skill/tk-hub", "01");
+      expect([t.synthesis_status, t.synthesis_backend]).toEqual(["ok", "cursor"]);
+    });
+
+    it("synthesis_failed marks it failed with the error and raises a toast", () => {
+      const store = loaded();
+      store.apply(fixture("synthesis-failed"));
+      const t = ticketOf(store, "dev-daniel/devboxes/tk-hub", "05");
+      expect([t.synthesis_status, t.synthesis_backend]).toEqual(["failed", "agy"]);
+      expect(t.synthesis_error).toContain("agy: timed out after 300s");
+      expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("#05") });
+    });
+
+    it("a board-brief event (nn null) leaves the tickets alone", () => {
+      const store = loaded();
+      const before = store.view().allBoards;
+      store.apply(fixture("synthesis-finished-board-brief"));
+      expect(store.view().allBoards).toBe(before);
     });
   });
 

@@ -21,6 +21,8 @@ function setup(open: [string, string]) {
     paneTail: vi.fn().mockResolvedValue(undefined),
     ship: vi.fn().mockResolvedValue(true),
     resolveNoCode: vi.fn().mockResolvedValue(true),
+    refine: vi.fn().mockResolvedValue(true),
+    setTaskDone: vi.fn().mockResolvedValue(true),
   };
   const store = createStore();
   store.load(boardsResponse());

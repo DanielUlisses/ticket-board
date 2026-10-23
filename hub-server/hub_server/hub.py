@@ -21,6 +21,9 @@ LONG_TIMEOUT = 600.0
 TIMEOUT = 120.0
 UI_SEND_TIMEOUT = 5.0
 RESULT_FIELDS = ("id", "ok", "exit_code", "output_tail", "reason", "data")
+# synthesis_* events a daemon reports, relayed to the UI with these fields only.
+SYNTHESIS_EVENTS = {"synthesis_started", "synthesis_finished", "synthesis_failed"}
+SYNTHESIS_FIELDS = ("type", "board_key", "nn", "backend", "at", "error")
 # The ticket RPCs POST .../tickets/{nn}/action routes to the board's daemon.
 TICKET_ACTIONS = (
     "launch_ticket", "say_agent", "pane_tail",
@@ -216,6 +219,12 @@ class Hub:
             return
         if message.get("type") == "snapshot":
             await self.apply_snapshot(devbox, message)
+        elif message.get("type") in SYNTHESIS_EVENTS:
+            # A daemon only speaks for its own box's boards.
+            if message["board_key"].startswith(f"{devbox}/"):
+                await self.broadcast(
+                    {k: message[k] for k in SYNTHESIS_FIELDS if k in message}
+                )
         elif message.get("type") == "rpc_result":
             rpc_id = message.get("id")
             rpc = self.pending.get(rpc_id) if isinstance(rpc_id, str) else None

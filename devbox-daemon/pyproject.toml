@@ -20,6 +20,8 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# agy_runner.py is imported by the tests as well as by tk-daemon.py.
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py312"

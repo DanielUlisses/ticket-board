@@ -11,7 +11,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hub_server import PROTOCOL_VERSION
@@ -191,6 +191,17 @@ class PolicyValues(BaseModel):
 
 class PolicyRequest(BaseModel):
     values: PolicyValues
+
+
+class CommentRequest(BaseModel):
+    """The developer's comment for a synthesis run; empty: a plain refresh."""
+
+    comment: StrictStr
+
+
+class TaskDoneRequest(BaseModel):
+    text: StrictStr = Field(min_length=1)
+    done: StrictBool
 
 
 class MemoryProposal(BaseModel):
@@ -381,6 +392,39 @@ def create_app(
                 404, f"devbox {board['devbox']} is not connected"
             ) from None
         return {"rpc": {"id": rpc_id, "devbox": board["devbox"]}}
+
+    async def ticket_rpc(board_key: str, nn: str, method: str, params: dict) -> dict:
+        """`method` on the devbox of the board holding ticket `nn`; 404 unknown
+        board or ticket, 409 devbox offline."""
+        find_ticket(board_key, nn)
+        devbox = hub.store.boards.get(board_key)["devbox"]
+        try:
+            rpc_id = await hub.send_rpc(
+                devbox,
+                method,
+                {"board_key": board_key, "nn": nn, **params},
+                board_key=board_key,
+                nn=nn,
+            )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        return {"rpc": {"id": rpc_id, "devbox": devbox}}
+
+    @app.post("/api/boards/{board_key:path}/tickets/{nn}/comment", status_code=202)
+    async def refine(board_key: str, nn: str, request: CommentRequest):
+        """refine_with_comment: a synthesis run on the ticket with the developer's
+        comment; synthesis_* events and the rpc_result arrive on /ws/ui."""
+        return await ticket_rpc(
+            board_key, nn, "refine_with_comment", {"comment": request.comment}
+        )
+
+    @app.post("/api/boards/{board_key:path}/tickets/{nn}/tasks", status_code=202)
+    async def task_done(board_key: str, nn: str, request: TaskDoneRequest):
+        """set_task_done: ticks (or unticks) a checklist item in the box's hub-meta;
+        it arrives with the board's next snapshot."""
+        return await ticket_rpc(
+            board_key, nn, "set_task_done", {"text": request.text, "done": request.done}
+        )
 
     @app.post("/api/boards/{board_key:path}/memory", status_code=202)
     async def propose_memory(board_key: str, request: MemoryProposal):
