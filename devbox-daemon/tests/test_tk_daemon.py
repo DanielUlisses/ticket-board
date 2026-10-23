@@ -5,7 +5,6 @@ import asyncio
 import contextlib
 import json
 import shutil
-import subprocess
 import sys
 
 import pytest

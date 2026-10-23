@@ -19,6 +19,8 @@ function setup(open: [string, string]) {
     proposeMemory: vi.fn().mockResolvedValue(true),
     say: vi.fn().mockResolvedValue("r-say"),
     paneTail: vi.fn().mockResolvedValue(undefined),
+    refine: vi.fn().mockResolvedValue(true),
+    setTaskDone: vi.fn().mockResolvedValue(true),
   };
   const store = createStore();
   store.load(boardsResponse());

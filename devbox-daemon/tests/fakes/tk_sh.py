@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Fake ticket-skill tk.sh: `boards`, `export <path>`, `policy <path>`, `help`, with
+"""Fake ticket-skill tk.sh: `boards`, `export <path>`, `policy <path>`, `show <path> <NN>
+<lines>`, `help`, with
 the real verbs' output shape. Each call is appended to $FAKE_TK_LOG as
 {"argv", "cwd", "pid"}. A board's rows come from <board>/rows.json; a board holding
 `export-fails` fails its export, one holding `export-slow` (seconds) is slow to
 export, one holding `export-stubborn` (seconds) is as slow and ignores SIGTERM.
-`<repo>/.scratch/boards-out` replaces what `boards` prints. $FAKE_TK_HELP_FAILS
+`<repo>/.scratch/boards-out` replaces what `boards` prints. `show` prints the board's
+`show-<NN>.txt`, else a canned line; `show-fails` makes it fail. $FAKE_TK_HELP_FAILS
 makes `help` fail; $FAKE_TK_HELP_PROSE adds prose naming policy files to it.
 The `policy` verb exists (and `help` lists it) only when $FAKE_TK_POLICY is set:
 then `resolved-policy.json` answers it and `policy-fails` makes it fail; `policy-set` then
@@ -111,15 +113,21 @@ elif verb == "say":
            21: "NOT SENT — tk-agent isn't running"}[code])  # fmt: skip
     sys.exit(code)
 elif verb == "show":
-    board = Path(args[1])
+    board, nn = Path(args[1]), args[2]
+    if (board / "show-fails").exists():
+        sys.exit("ERROR: herdr is down")
     if (board / "show-stderr").exists():
         print((board / "show-stderr").read_text(), file=sys.stderr)
     if (board / "agent-gone").exists():
         print("tk-agent isn't running")
         sys.exit(21)
     pane = board / "pane.txt"
-    lines = pane.read_text().splitlines() if pane.exists() else []
-    print("\n".join(lines[-int(args[3]) :]))
+    if (board / f"show-{nn}.txt").exists():
+        print((board / f"show-{nn}.txt").read_text())
+    elif pane.exists():
+        print("\n".join(pane.read_text().splitlines()[-int(args[3]) :]))
+    else:
+        print(f"tk show {nn}: the agent pane tail")
 elif verb == "policy" and has_policy:
     board = Path(args[1])
     if (board / "policy-fails").exists():

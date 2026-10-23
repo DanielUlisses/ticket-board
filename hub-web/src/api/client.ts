@@ -102,6 +102,22 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     return `HTTP ${res.status}`;
   }
 
+  /** POST a JSON body; true on 2xx, else a toast `<what> failed: <why>` and false. */
+  async function postToast(url: string, body: unknown, what: string): Promise<boolean> {
+    try {
+      const res = await doFetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) return true;
+      store.toast({ kind: "error", text: `${what} failed: ${await errorText(res)}` });
+    } catch (err) {
+      store.toast({ kind: "error", text: `${what} failed: ${(err as Error).message}` });
+    }
+    return false;
+  }
+
   // board_key is `<devbox>/<repo>/<board>`: encode each segment, keep the slashes.
   const boardUrl = (boardKey: string, leaf: string) =>
     `${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/${leaf}`;
@@ -142,6 +158,16 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
   return {
     /** The ticket's full report and raw body (ticket sheet's report modal). */
     report: (boardKey: string, nn: string) => getJson<ReportResponse>(ticketUrl(boardKey, nn, "report")),
+    /**
+     * ✦ Update via agy: a synthesis run on the ticket with the developer's comment
+     * (empty: a plain refresh). Progress arrives as synthesis_* events, the result with
+     * the board's next snapshot.
+     */
+    refine: (boardKey: string, nn: string, comment: string) =>
+      postToast(ticketUrl(boardKey, nn, "comment"), { comment }, "Update"),
+    /** Ticks (or unticks) a checklist item, matched by its text, in the box's hub-meta. */
+    setTaskDone: (boardKey: string, nn: string, text: string, done: boolean) =>
+      postToast(ticketUrl(boardKey, nn, "tasks"), { text, done }, "Checklist tick"),
     /** The ticket's column moves, oldest first. */
     activity: async (boardKey: string, nn: string): Promise<ActivityEvent[]> =>
       (await getJson<ActivityResponse>(ticketUrl(boardKey, nn, "activity"))).events,
