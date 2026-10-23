@@ -14,7 +14,14 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from hub_server import PROTOCOL_VERSION
-from hub_server.hub import SEND_ERRORS, UI_SEND_TIMEOUT, DevboxOffline, Hub
+from hub_server.hub import (
+    SEND_ERRORS,
+    UI_SEND_TIMEOUT,
+    BadAction,
+    DevboxOffline,
+    Hub,
+    frontier_launches,
+)
 
 REFUSED_CLOSE_CODE = 1008  # policy violation
 # hub-server/hub_server/app.py -> <repo>/hub-web/dist
@@ -157,6 +164,11 @@ def bearer(ws: WebSocket) -> str:
 
 class ScanRequest(BaseModel):
     devbox: str | None = None
+
+
+class ActionRequest(BaseModel):
+    method: str
+    params: dict
 
 
 def create_app(
@@ -331,6 +343,55 @@ def create_app(
         except DevboxOffline:
             raise HTTPException(404, f"devbox {devbox} is not connected") from None
         return {"rpcs": rpcs}
+
+    def offline(devbox: str) -> HTTPException:
+        return HTTPException(409, f"devbox {devbox} is not connected")
+
+    @app.post("/api/boards/{board_key:path}/tickets/{nn}/action", status_code=202)
+    async def ticket_action(board_key: str, nn: str, request: ActionRequest):
+        """launch_ticket / say_agent / pane_tail on the board's daemon; the
+        rpc_result arrives on /ws/ui."""
+        find_ticket(board_key, nn)
+        devbox = hub.store.boards.get(board_key)["devbox"]
+        try:
+            sent = await hub.ticket_action(
+                devbox, board_key, nn, request.method, request.params
+            )
+        except BadAction as e:
+            raise HTTPException(422, str(e)) from None
+        except DevboxOffline:
+            raise offline(devbox) from None
+        return {"rpcs": [sent]}
+
+    @app.post("/api/boards/{board_key:path}/frontier", status_code=202)
+    async def launch_frontier(board_key: str):
+        """▶ Frontier: launch_ticket for each of the board's backlog tickets;
+        the daemon refuses those past its max_parallel. A devbox that drops
+        midway keeps the rpcs already sent (202, the rest skipped); 409 only
+        when nothing was sent."""
+        board = hub.store.boards.get(board_key)
+        if not board:
+            raise HTTPException(404, f"no board {board_key}")
+        launches, skipped = frontier_launches(board)
+        rpcs, gone = [], False
+        for nn, params in launches:
+            if gone:
+                skipped.append({"nn": nn, "reason": "devbox disconnected"})
+                continue
+            try:
+                rpcs.append(
+                    await hub.ticket_action(
+                        board["devbox"], board_key, nn, "launch_ticket", params
+                    )
+                )
+            except DevboxOffline:
+                if not rpcs:
+                    raise offline(board["devbox"]) from None
+                gone = True
+                skipped.append({"nn": nn, "reason": "devbox disconnected"})
+            except BadAction as e:  # a suggestion the schema refuses
+                skipped.append({"nn": nn, "reason": str(e)})
+        return {"rpcs": rpcs, "skipped": skipped}
 
     # Last, so /api and /ws routes win over the catch-all mount.
     if web_dist is not None and Path(web_dist).is_dir():

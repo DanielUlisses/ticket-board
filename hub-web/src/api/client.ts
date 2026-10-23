@@ -1,13 +1,24 @@
 // Typed client for the hub: `GET /api/boards` on start, `/ws/ui` kept open
-// with backoff reconnects, `POST /api/scan` for ↻ Scan. Everything it learns
-// goes into the one store; it holds no board data itself.
+// with backoff reconnects, `POST /api/scan` for ↻ Scan, and the ticket actions
+// (`POST /api/boards/{key}/tickets/{nn}/action`, `.../frontier`): each accepted
+// rpc is tracked in the store until its rpc_result arrives on the socket.
+// Everything it learns goes into the one store; it holds no board data itself.
 //
 // ASSUMPTIONS (the hub routes arrive with ticket 08, unwritten when this was):
 //   - GET /api/boards -> BoardsResponse `{boards, devboxes}`;
 //   - POST /api/scan with `{"devbox": "<name>" | null}` (null: every box), any
 //     2xx meaning the rescan was sent; the outcome arrives later as rpc_result;
 //   - errors carry FastAPI's `{"detail": "..."}`.
-import type { ActivityEvent, BoardsResponse, ReportResponse, UiEvent } from "../protocol/types";
+import type {
+  ActionResponse,
+  ActivityEvent,
+  ActivityResponse,
+  BoardsResponse,
+  ReportResponse,
+  SentRpc,
+  TicketType,
+  UiEvent,
+} from "../protocol/types";
 import type { Store } from "../store/store";
 
 /** The part of the browser WebSocket the client uses. */
@@ -26,6 +37,13 @@ export interface HubClientDeps {
 }
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
+
+/** What ▶ Launch runs with: the suggestions, or the unlocked selects. */
+export interface LaunchSettings {
+  type: TicketType;
+  model: string;
+  effort: string;
+}
 
 export function createHubClient(store: Store, deps: HubClientDeps = {}) {
   const origin = deps.origin ?? window.location.origin;
@@ -84,8 +102,35 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
   }
 
   // board_key is `<devbox>/<repo>/<board>`: encode each segment, keep the slashes.
+  const boardUrl = (boardKey: string, leaf: string) =>
+    `${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/${leaf}`;
   const ticketUrl = (boardKey: string, nn: string, leaf: string) =>
-    `${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/tickets/${encodeURIComponent(nn)}/${leaf}`;
+    boardUrl(boardKey, `tickets/${encodeURIComponent(nn)}/${leaf}`);
+
+  async function post<T>(url: string, body?: unknown): Promise<T> {
+    const res = await doFetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    return (await res.json()) as T;
+  }
+
+  /** POST an action; its rpcs are tracked until their results, a refusal is a toast. */
+  async function action(label: string, url: string, body?: unknown): Promise<ActionResponse | null> {
+    try {
+      const res = await post<ActionResponse>(url, body);
+      store.track(res.rpcs);
+      return res;
+    } catch (err) {
+      store.toast({ kind: "error", text: `${label} failed: ${(err as Error).message}` });
+      return null;
+    }
+  }
+
+  const ticketAction = (label: string, boardKey: string, nn: string, method: string, params: object) =>
+    action(label, ticketUrl(boardKey, nn, "action"), { method, params });
 
   async function getJson<T>(url: string): Promise<T> {
     const res = await doFetch(url, { headers: { accept: "application/json" } });
@@ -97,7 +142,36 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     /** The ticket's full report and raw body (ticket sheet's report modal). */
     report: (boardKey: string, nn: string) => getJson<ReportResponse>(ticketUrl(boardKey, nn, "report")),
     /** The ticket's column moves, oldest first. */
-    activity: (boardKey: string, nn: string) => getJson<ActivityEvent[]>(ticketUrl(boardKey, nn, "activity")),
+    activity: async (boardKey: string, nn: string): Promise<ActivityEvent[]> =>
+      (await getJson<ActivityResponse>(ticketUrl(boardKey, nn, "activity"))).events,
+    /** ▶ Launch from the sheet: a manual launch (past max_parallel, with a warning). */
+    async launch(boardKey: string, nn: string, settings: LaunchSettings): Promise<void> {
+      await ticketAction("▶ Launch", boardKey, nn, "launch_ticket", { ...settings, manual: true });
+    },
+    /** ↵ Send: relays the message with tk.sh say; the rpc id, or null when refused. */
+    async say(boardKey: string, nn: string, message: string): Promise<string | null> {
+      const res = await ticketAction("↵ Send", boardKey, nn, "say_agent", { message });
+      return res?.rpcs[0]?.id ?? null;
+    },
+    /** One poll of the agent's pane; its lines arrive as a pane_tail rpc_result. Rejects when not sent. */
+    async paneTail(boardKey: string, nn: string, lines: number): Promise<void> {
+      await post<ActionResponse>(ticketUrl(boardKey, nn, "action"), { method: "pane_tail", params: { lines } });
+    },
+    /** ▶ Frontier: every backlog ticket of the board, within the box's caps. */
+    async frontier(boardKey: string): Promise<SentRpc[]> {
+      const res = await action("▶ Frontier", boardUrl(boardKey, "frontier"));
+      if (!res) return [];
+      const skipped = (res.skipped ?? []).map((s) => `#${s.nn} (${s.reason})`);
+      const launching =
+        res.rpcs.length > 0
+          ? `▶ Frontier: launching ${res.rpcs.map((r) => `#${r.nn}`).join(", ")}`
+          : "▶ Frontier: nothing to launch";
+      store.toast({
+        kind: skipped.length > 0 ? "warn" : "ok",
+        text: skipped.length > 0 ? `${launching}; skipped ${skipped.join(", ")}` : launching,
+      });
+      return res.rpcs;
+    },
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {
       stopped = false;

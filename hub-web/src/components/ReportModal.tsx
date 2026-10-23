@@ -64,7 +64,11 @@ export function ReportModal({
               </section>
               <section aria-label="Ticket body">
                 <h3 className={styles.sub}>Ticket</h3>
-                <Markdown source={result.report.body} />
+                {result.report.body !== null ? (
+                  <Markdown source={result.report.body} />
+                ) : (
+                  <p className={styles.note}>No ticket body.</p>
+                )}
               </section>
             </>
           )}

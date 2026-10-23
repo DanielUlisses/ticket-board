@@ -8,7 +8,14 @@ export, one holding `export-stubborn` (seconds) is as slow and ignores SIGTERM.
 makes `help` fail; $FAKE_TK_HELP_PROSE adds prose naming policy files to it.
 The `policy` verb exists (and `help` lists it) only when $FAKE_TK_POLICY is set:
 then `resolved-policy.json` answers it and `policy-fails` makes it fail. Without
-it, `policy` fails like a tk.sh without that verb (usage on stdout, exit 1)."""
+it, `policy` fails like a tk.sh without that verb (usage on stdout, exit 1).
+`launch <board> <NN> --type --model --effort` moves the row to `working` and
+exits 0, or exits with `<board>/launch-exit` (the row left alone); it holds for
+`<board>/launch-slow` seconds first. `say <board> <NN> <file>` logs the file's
+text as "message" and exits with `<board>/say-exit` (20: at a dialog, 21: no
+agent) or 0. `show <board> <NN> <lines>` prints the last <lines> lines of
+`<board>/pane.txt`, or exits 21 when `<board>/agent-gone` exists; it writes
+`<board>/show-stderr` to stderr, if there."""
 
 import json
 import os
@@ -21,8 +28,11 @@ from pathlib import Path
 cwd = Path.cwd()
 args = sys.argv[1:]
 if log := os.environ.get("FAKE_TK_LOG"):
+    entry = {"argv": args, "cwd": str(cwd), "pid": os.getpid()}
+    if args[:1] == ["say"] and len(args) > 3 and Path(args[3]).is_file():
+        entry["message"] = Path(args[3]).read_text()
     with open(log, "a") as f:
-        f.write(json.dumps({"argv": args, "cwd": str(cwd), "pid": os.getpid()}) + "\n")
+        f.write(json.dumps(entry) + "\n")
 
 
 def rows(board: Path) -> list:
@@ -81,6 +91,34 @@ elif verb == "export":
             }
         )
     )
+elif verb == "launch":
+    board, nn = Path(args[1]), args[2]
+    if (board / "launch-slow").exists():
+        time.sleep(float((board / "launch-slow").read_text()))
+    if (board / "launch-exit").exists():
+        print(f"ERROR: ticket {nn} launch failed")
+        sys.exit(int((board / "launch-exit").read_text()))
+    kept = [dict(r, col="working", status="in-progress") if r["nn"] == nn else r
+            for r in rows(board)]  # fmt: skip
+    (board / "rows.json").write_text(json.dumps(kept))
+    print(f"RECORDED {nn} in-progress on {args[args.index('--type') + 1]}-{nn}-x")
+elif verb == "say":
+    board = Path(args[1])
+    code = int((board / "say-exit").read_text()) if (board / "say-exit").exists() else 0
+    print({0: "SENT to tk-agent (idle)",
+           20: "NOT SENT — tk-agent is 'blocked'; a message typed at a dialog could answer it",
+           21: "NOT SENT — tk-agent isn't running"}[code])  # fmt: skip
+    sys.exit(code)
+elif verb == "show":
+    board = Path(args[1])
+    if (board / "show-stderr").exists():
+        print((board / "show-stderr").read_text(), file=sys.stderr)
+    if (board / "agent-gone").exists():
+        print("tk-agent isn't running")
+        sys.exit(21)
+    pane = board / "pane.txt"
+    lines = pane.read_text().splitlines() if pane.exists() else []
+    print("\n".join(lines[-int(args[3]) :]))
 elif verb == "policy" and has_policy:
     board = Path(args[1])
     if (board / "policy-fails").exists():

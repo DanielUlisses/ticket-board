@@ -23,3 +23,9 @@
   text-overflow: ellipsis;
   max-width: 100%;
 }
+.toast[data-kind="warn"] {
+  background: var(--icon-review);
+}
+.toast[data-kind="error"] {
+  background: var(--icon-urgent);
+}

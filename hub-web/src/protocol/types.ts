@@ -128,6 +128,8 @@ export interface RpcResult {
   exit_code: number | null;
   output_tail: string;
   reason?: string;
+  /** Structured results: pane_tail's `pane`, a manual launch's `over_cap`… */
+  data?: Record<string, unknown>;
   devbox?: string;
   method?: string;
   board_key?: string;
@@ -153,20 +155,53 @@ export interface BoardsResponse {
 }
 
 /**
- * `GET /api/boards/{board_key}/tickets/{nn}/report`. ASSUMPTION: ticket 08
- * names the endpoint but not the shape; `body` is the raw ticket file.
+ * `GET /api/boards/{board_key}/tickets/{nn}/report` (`$defs/rest_report`).
+ * `body` is the ticket file's raw text, null when the daemon didn't send it.
  */
 export interface ReportResponse {
+  board_key: string;
+  nn: string;
+  title: string;
   full_report_md: string | null;
-  body: string;
+  body: string | null;
 }
 
-/**
- * One row of `GET /api/boards/{board_key}/tickets/{nn}/activity` (the hub's
- * `ticket_moved` log, oldest first). ASSUMPTION: a bare array, shape as TicketMoved.
- */
+/** One of the ticket's column moves (`$defs/ticket_moved`): what the timeline reads. */
 export interface ActivityEvent {
   from: Column;
   to: Column;
   at: Timestamp;
+}
+
+/**
+ * `GET /api/boards/{board_key}/tickets/{nn}/activity` (`$defs/rest_activity`):
+ * the hub's `ticket_moved` log for the ticket, oldest first.
+ */
+export interface ActivityResponse {
+  board_key: string;
+  nn: string;
+  events: TicketMoved[];
+}
+
+/** `$defs/params_launch_ticket` `type`: tk.sh launch --type. */
+export type TicketType = "feat" | "fix" | "refactor" | "chore" | "docs" | "test" | "perf" | "ci";
+
+export const TICKET_TYPES: readonly TicketType[] = ["feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci"];
+
+/** One rpc the hub sent for an action (`$defs/rest_action` `rpcs`). */
+export interface SentRpc {
+  id: string;
+  devbox: string;
+  method: string;
+  board_key: string;
+  nn: string;
+}
+
+/**
+ * `POST /api/boards/{board_key}/tickets/{nn}/action` and `.../frontier` -> 202
+ * (`$defs/rest_action`); each rpc's outcome arrives later as rpc_result.
+ */
+export interface ActionResponse {
+  rpcs: SentRpc[];
+  skipped?: { nn: string; reason: string }[];
 }

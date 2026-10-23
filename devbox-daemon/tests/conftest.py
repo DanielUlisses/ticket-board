@@ -1,10 +1,11 @@
 """Shared test scaffolding: a fake box (HOME, ~/work repos with boards) and fake
-`tk.sh`, `herdr` and `op` on PATH (tests/fakes)."""
+`tk.sh`, `herdr` and `op` on PATH (tests/fakes), and the fake hub's TLS certificate."""
 
 import json
 import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ DAEMON_DIR = Path(__file__).resolve().parents[1]
 PROTOCOL = DAEMON_DIR.parent / "protocol"
 VALIDATOR = Draft202012Validator(json.loads((PROTOCOL / "schema.json").read_text()))
 FAKES = Path(__file__).resolve().parent / "fakes"
+NAME = "hub.test"  # the hub's MagicDNS name, as in the test certificate
 
 
 def schema_errors(msg: dict) -> list[str]:
@@ -99,3 +101,17 @@ class Box:
 @pytest.fixture
 def box(tmp_path) -> Box:
     return Box(tmp_path)
+
+
+@pytest.fixture(scope="session")
+def cert(tmp_path_factory):
+    d = tmp_path_factory.mktemp("cert")
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+         "-nodes", "-keyout", d / "key.pem", "-out", d / "cert.pem", "-days", "2",
+         "-subj", f"/CN={NAME}", "-addext", f"subjectAltName=DNS:{NAME}",
+         "-addext", "basicConstraints=critical,CA:TRUE",
+         "-addext", "keyUsage=critical,digitalSignature,keyCertSign"],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    return d / "cert.pem", d / "key.pem"

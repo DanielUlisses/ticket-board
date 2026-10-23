@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import Ajv2020 from "ajv/dist/2020";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TicketMoved } from "../protocol/types";
 import { createStore } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { createHubClient, type SocketLike } from "./client";
@@ -168,5 +172,85 @@ describe("ticket detail endpoints", () => {
       "https://hub/api/boards/dev%20one/repo/board/tickets/01/activity",
       "https://hub/api/boards/dev-daniel/repo/board/tickets/01/report",
     ]);
+  });
+});
+
+describe("ticket actions", () => {
+  const KEY = "dev-daniel/ticket-board/tk-hub";
+  const sent = (nn: string, method = "launch_ticket") => ({ id: `r-${nn}`, devbox: "dev-daniel", method, board_key: KEY, nn });
+
+  it("launch posts a manual launch_ticket and tracks its rpc until the result", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ rpcs: [sent("27")] }, 202));
+    await client.launch(KEY, "27", { type: "fix", model: "opus", effort: "high" });
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe(`https://tk-hub.example.ts.net/api/boards/${KEY}/tickets/27/action`);
+    expect(JSON.parse(String(init?.body))).toEqual({
+      method: "launch_ticket",
+      params: { type: "fix", model: "opus", effort: "high", manual: true },
+    });
+    expect(store.view().pending).toEqual([sent("27")]);
+    store.apply({ type: "rpc_result", id: "r-27", ok: true, exit_code: 0, output_tail: "RECORDED 27" });
+    expect(store.view().pending).toEqual([]);
+  });
+
+  it("a refused action toasts the hub's reason and tracks nothing", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ detail: "devbox dev-daniel is not connected" }, 409));
+    expect(await client.say(KEY, "05", "hi")).toBeNull();
+    expect(store.view().toasts.map((t) => t.text)).toEqual(["↵ Send failed: devbox dev-daniel is not connected"]);
+    expect(store.view().pending).toEqual([]);
+  });
+
+  it("frontier posts to the board, tracks each launch and says what it launched and skipped", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() =>
+      json({ rpcs: [sent("08"), sent("27")], skipped: [{ nn: "09", reason: "no suggested model/effort" }] }, 202),
+    );
+    await client.frontier(KEY);
+    expect(fetch.mock.calls[0][0]).toBe(`https://tk-hub.example.ts.net/api/boards/${KEY}/frontier`);
+    expect(store.view().pending.map((p) => p.nn)).toEqual(["08", "27"]);
+    expect(store.view().toasts.map((t) => [t.kind, t.text])).toEqual([
+      ["warn", "▶ Frontier: launching #08, #27; skipped #09 (no suggested model/effort)"],
+    ]);
+  });
+
+  it("a result that beats its POST's answer leaves nothing pending", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => {
+      store.apply({ type: "rpc_result", id: "r-27", ok: true, exit_code: 0, output_tail: "" });
+      return json({ rpcs: [sent("27")] }, 202);
+    });
+    await client.launch(KEY, "27", { type: "feat", model: "sonnet", effort: "low" });
+    expect(store.view().pending).toEqual([]);
+  });
+
+  describe("REST reads, shaped as protocol/schema.json says the hub answers", () => {
+    const schema = JSON.parse(readFileSync(resolve(__dirname, "../../../protocol/schema.json"), "utf8"));
+    const ajv = new Ajv2020({ allErrors: true });
+    ajv.addKeyword("x-protocol-version");
+    ajv.addSchema(schema);
+    /** The stubbed answer, checked against `$defs/<def>` first. */
+    function answering(def: string, body: object) {
+      const valid = ajv.getSchema(`${schema.$id}#/$defs/${def}`)!;
+      expect(valid(body), JSON.stringify(valid.errors)).toBe(true);
+      const store = createStore();
+      const fetch = vi.fn(() => json(body));
+      return createHubClient(store, { origin: "https://tk-hub.example.ts.net", fetch: fetch as unknown as typeof globalThis.fetch, WebSocket: FakeSocket });
+    }
+    const KEY = "dev-daniel/ticket-board/tk-hub";
+
+    it("activity gives the ticket's events from rest_activity", async () => {
+      const moved = fixture<TicketMoved>("ticket-moved");
+      const client = answering("rest_activity", { board_key: moved.board_key, nn: moved.nn, events: [moved] });
+      const events = await client.activity(moved.board_key, moved.nn);
+      expect(events).toEqual([moved]);
+    });
+
+    it("report gives rest_report as is, a missing body as null", async () => {
+      const body = { board_key: KEY, nn: "27", title: "Hub settings page", full_report_md: null, body: null };
+      const client = answering("rest_report", body);
+      expect(await client.report(KEY, "27")).toEqual(body);
+    });
   });
 });

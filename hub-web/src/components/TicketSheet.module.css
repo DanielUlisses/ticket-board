@@ -67,7 +67,7 @@
   flex-direction: column;
   gap: 12px;
 }
-/* Reserved for the action buttons of later tickets. */
+/* The actions by column (Actions.module.css); empty on columns without one. */
 .foot {
   min-height: 0;
   background: var(--surface);
