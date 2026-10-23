@@ -3,7 +3,12 @@ import type { Stage } from "../store/store";
 import styles from "./Controls.module.css";
 import { useStore, useView } from "./StoreContext";
 
-const PILLS: { stage: Stage; label: string; dot?: "urgent" | "working"; counted: boolean }[] = [
+const PILLS: {
+  stage: Stage;
+  label: string;
+  dot?: "urgent" | "working";
+  counted: boolean;
+}[] = [
   { stage: "all", label: "All", counted: false },
   { stage: "attention", label: "Needs You", dot: "urgent", counted: true },
   { stage: "active", label: "Active", dot: "working", counted: true },
@@ -11,18 +16,31 @@ const PILLS: { stage: Stage; label: string; dot?: "urgent" | "working"; counted:
 ];
 
 /** Devbox / Board / Stage selects and the stage pills (the same filter as Stage). */
-export function Controls() {
+export function Controls({
+  onArchive,
+}: {
+  onArchive?: (boardKey: string, archived: boolean) => void;
+}) {
   const store = useStore();
-  const { filter, counts, devboxes, allBoards } = useView();
-  const boxNames = [...new Set([...devboxes.map((d) => d.devbox), ...allBoards.map((b) => b.devbox)])];
-  const boards = allBoards.filter((b) => filter.devbox === null || b.devbox === filter.devbox);
+  const { filter, counts, devboxes, allBoards, archivedBoards } = useView();
+  const boxNames = [
+    ...new Set([
+      ...devboxes.map((d) => d.devbox),
+      ...allBoards.map((b) => b.devbox),
+    ]),
+  ];
+  const boards = allBoards.filter(
+    (b) => filter.devbox === null || b.devbox === filter.devbox,
+  );
   return (
     <div className={styles.bar}>
       <select
         className={styles.select}
         aria-label="Devbox"
         value={filter.devbox ?? ""}
-        onChange={(e) => store.setFilter({ devbox: e.target.value || null, board: null })}
+        onChange={(e) =>
+          store.setFilter({ devbox: e.target.value || null, board: null })
+        }
       >
         <option value="">All Devboxes ({boxNames.length})</option>
         {boxNames.map((name) => (
@@ -31,19 +49,47 @@ export function Controls() {
           </option>
         ))}
       </select>
-      <select
-        className={styles.select}
-        aria-label="Board"
-        value={filter.board ?? ""}
-        onChange={(e) => store.setFilter({ board: e.target.value || null })}
-      >
-        <option value="">All Boards ({boards.length})</option>
-        {boards.map((b) => (
-          <option key={b.key} value={b.key}>
-            {b.slug} · {b.repo.slice(0, 18)}
-          </option>
-        ))}
-      </select>
+      <div className={styles.boardCell}>
+        <select
+          className={styles.select}
+          aria-label="Board"
+          value={filter.board ?? ""}
+          onChange={(e) => store.setFilter({ board: e.target.value || null })}
+        >
+          <option value="">All Boards ({boards.length})</option>
+          {boards.map((b) => (
+            <option key={b.key} value={b.key}>
+              {b.slug} · {b.repo.slice(0, 18)}
+            </option>
+          ))}
+        </select>
+        {filter.board !== null && (
+          <button
+            type="button"
+            className={styles.pill}
+            disabled={
+              allBoards.find((b) => b.key === filter.board)?.stale ?? false
+            }
+            onClick={() => onArchive?.(filter.board!, true)}
+          >
+            Archive
+          </button>
+        )}
+        <details className={styles.archived}>
+          <summary>Archived ({archivedBoards.length})</summary>
+          {archivedBoards.map((b) => (
+            <label key={b.key}>
+              <input
+                type="checkbox"
+                checked
+                disabled={b.stale}
+                onChange={() => onArchive?.(b.key, false)}
+              />
+              {b.slug} · {b.repo.slice(0, 18)}
+            </label>
+          ))}
+        </details>
+      </div>
       <select
         className={styles.select}
         aria-label="Stage"
@@ -66,7 +112,13 @@ export function Controls() {
             aria-pressed={filter.stage === p.stage}
             onClick={() => store.setFilter({ stage: p.stage })}
           >
-            {p.dot && <span className={styles.dot} data-dot={p.dot} aria-hidden="true" />}
+            {p.dot && (
+              <span
+                className={styles.dot}
+                data-dot={p.dot}
+                aria-hidden="true"
+              />
+            )}
             {p.counted ? `${p.label} (${counts[p.stage]})` : p.label}
           </button>
         ))}

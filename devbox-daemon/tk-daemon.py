@@ -245,7 +245,10 @@ class Daemon:
         self.export_start = 0  # where the next export starts (tk-export: resume)
         self.schema = Schema(json.loads(Path(cfg.get("schema", SCHEMA)).read_text()))
         self.lock = asyncio.Lock()
-        self.rpcs = {"rescan_boards": self.rpc_rescan_boards}
+        self.rpcs = {
+            "rescan_boards": self.rpc_rescan_boards,
+            "set_archived": self.rpc_set_archived,
+        }
 
     # ---- export --------------------------------------------------------------------
     async def export(self) -> tuple[dict, set[str]]:
@@ -382,6 +385,30 @@ class Daemon:
                 f"; sent as a delta, not full: no copy yet of failed {' '.join(held)}"
             )
         return {"ok": True, "exit_code": 0, "output_tail": tail}
+
+    async def rpc_set_archived(self, ws, params: dict) -> dict:
+        key, flag = params.get("board_key"), params.get("archived")
+        if not isinstance(flag, bool):
+            raise ValueError(f"bad set_archived params: {params!r}")  # noqa: TRY004
+        b = self.sent.get(key)
+        if b is None:
+            raise ValueError(f"no board {key} on this box")
+        board = Path(b["board_path"])
+        meta_file = board / "hub-meta.json"
+        # Read-modify-write: safe only while this is the daemon's single writer
+        # (no awaits in between); a per-board lock is needed once another exists.
+        meta = json.loads(meta_file.read_text()) if meta_file.exists() else {}
+        if not isinstance(meta, dict):
+            raise ValueError(f"{meta_file} is not a JSON object")  # noqa: TRY004
+        meta["archived"] = flag
+        tmp = meta_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta, indent=2) + "\n")
+        tmp.replace(meta_file)
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"{key} archived={str(flag).lower()}",
+        }
 
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")

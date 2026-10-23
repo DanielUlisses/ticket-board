@@ -778,6 +778,10 @@
         }
       }
     },
+    "rest_archive": {
+      "description": "REST: POST /api/boards/{key}/archive, body {archived: boolean} -> 202, one set_archived rpc to the board's devbox; its rpc_result arrives on /ws/ui. 404 unknown board, 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
     "rest_error": {
       "description": "REST: any 4xx/5xx. detail is a message, or FastAPI's list of validation errors (422).",
       "type": "object",
