@@ -1,0 +1,8 @@
+{
+  "type": "rpc",
+  "id": "r-0016",
+  "method": "refresh_board_brief",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub"
+  }
+}

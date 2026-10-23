@@ -1,0 +1,92 @@
+/*
+ * tk-hub design tokens.
+ *
+ * ASSUMPTION — NOT YET FROM THE PROTOTYPE. These should be the `:root` tokens and
+ * fonts of the prototype `tk-hub.html` (board.md, Shape), but that file was not
+ * available when this was written. Only these facts come from board.md:
+ *   - status glyphs and their colours: `!` red, `◉` purple, `⇡` blue, `◐` green,
+ *     `◑` amber; colour is used only on the status glyph;
+ *   - 16px cards with a dotted top edge;
+ *   - a dot-matrix page background;
+ *   - an 8-column swimlane with a `pulseMove` animation;
+ *   - a 100dvh detail sheet.
+ * Every concrete value below (hex colours, font stacks, sizes) is a best-effort
+ * placeholder. Replace it with the prototype's `:root` verbatim when it is
+ * available; the token names are what components (ticket 09+) code against.
+ */
+
+:root {
+  /* Surfaces and text (placeholder values, dark theme) */
+  --bg: #0e0f12;
+  --bg-dot: #23252b;
+  --surface: #16181d;
+  --surface-raised: #1d2027;
+  --border: #2a2d35;
+  --text: #e6e7ea;
+  --text-muted: #9a9ea8;
+  --text-faint: #6b6f79;
+
+  /* Status glyph colours (names from board.md; hex values are placeholders) */
+  --glyph-red: #f0616d;     /* ! */
+  --glyph-purple: #b08cff;  /* ◉ */
+  --glyph-blue: #5aa9ff;    /* ⇡ */
+  --glyph-green: #4fd18b;   /* ◐ */
+  --glyph-amber: #f2b84b;   /* ◑ */
+
+  /* Review diff backgrounds (ticket 25) */
+  --diff-add-bg: rgb(79 209 139 / 0.12);
+  --diff-remove-bg: rgb(240 97 109 / 0.12);
+
+  /* Typography (placeholder stacks: no web font is loaded) */
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --line-height: 1.45;
+
+  /* Shape and spacing */
+  --card-radius: 16px;                         /* board.md: 16px cards */
+  --card-top-border: 1px dotted var(--border); /* board.md: dotted top edge */
+  --pill-radius: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  /* Dot-matrix background (board.md); dot spacing is a placeholder */
+  --dot-size: 1px;
+  --dot-gap: 16px;
+  --bg-image: radial-gradient(var(--bg-dot) var(--dot-size), transparent var(--dot-size));
+
+  /* Motion */
+  --pulse-duration: 1.2s;
+
+  /* Layout */
+  --swimlane-columns: 8; /* board.md: 8-column swimlane */
+  --sheet-height: 100dvh; /* board.md: 100dvh sheet */
+
+  color-scheme: dark;
+}
+
+/* A ticket that just moved (board.md: `pulseMove`). Keyframes are a placeholder. */
+@keyframes pulseMove {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgb(176 140 255 / 0.5); }
+  50% { transform: scale(1.04); box-shadow: 0 0 0 6px rgb(176 140 255 / 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgb(176 140 255 / 0); }
+}
+
+html,
+body {
+  margin: 0;
+  background-color: var(--bg);
+  background-image: var(--bg-image);
+  background-size: var(--dot-gap) var(--dot-gap);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height);
+}

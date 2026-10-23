@@ -1,0 +1,6 @@
+{
+  "type": "rpc",
+  "id": "r-0001",
+  "method": "rescan_boards",
+  "params": {}
+}

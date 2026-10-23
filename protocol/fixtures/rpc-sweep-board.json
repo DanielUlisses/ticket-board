@@ -1,0 +1,8 @@
+{
+  "type": "rpc",
+  "id": "r-0018",
+  "method": "sweep_board",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub"
+  }
+}

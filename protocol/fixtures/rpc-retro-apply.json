@@ -1,0 +1,13 @@
+{
+  "type": "rpc",
+  "id": "r-0020",
+  "method": "retro_apply",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "mark": "approve",
+    "ids": [
+      "M1",
+      "E2"
+    ]
+  }
+}

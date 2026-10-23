@@ -1,0 +1,8 @@
+{
+  "type": "rpc_result",
+  "id": "r-0013",
+  "ok": false,
+  "exit_code": null,
+  "output_tail": "",
+  "reason": "timed out after 600s"
+}

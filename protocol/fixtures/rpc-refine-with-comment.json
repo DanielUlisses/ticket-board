@@ -1,0 +1,10 @@
+{
+  "type": "rpc",
+  "id": "r-0013",
+  "method": "refine_with_comment",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "comment": "The summary should mention the total cap."
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "type": "hello",
+  "protocol_version": "1",
+  "devbox": "dev-daniel",
+  "health": {
+    "daemon_version": "0.1.0",
+    "herdr": {
+      "ok": true,
+      "status": "herdr server running (pid 1843, 6 agents)"
+    },
+    "usage": {
+      "state": "ok",
+      "five_hour": {
+        "used_percentage": 42,
+        "resets_at": "2026-10-23T17:00:00Z"
+      },
+      "seven_day": {
+        "used_percentage": 71.5,
+        "resets_at": "2026-10-27T09:00:00Z"
+      },
+      "updated_at": "2026-10-23T14:01:40Z"
+    },
+    "running": 4,
+    "last_sync": null
+  }
+}

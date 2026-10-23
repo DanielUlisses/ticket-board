@@ -1,0 +1,9 @@
+{
+  "type": "rpc",
+  "id": "r-0006",
+  "method": "ssh_push",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27"
+  }
+}

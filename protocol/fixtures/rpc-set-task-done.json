@@ -1,0 +1,11 @@
+{
+  "type": "rpc",
+  "id": "r-0014",
+  "method": "set_task_done",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "text": "Check an unknown board exits non-zero",
+    "done": true
+  }
+}

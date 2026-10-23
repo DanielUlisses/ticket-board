@@ -1,0 +1,9 @@
+{
+  "type": "devbox_status",
+  "devbox": "dev-acme",
+  "online": false,
+  "last_seen": "2026-10-22T18:44:00Z",
+  "health": null,
+  "protocol_version": "2.0",
+  "refused_reason": "protocol_version 2.0 is not compatible with hub 1.0 (major differs)"
+}

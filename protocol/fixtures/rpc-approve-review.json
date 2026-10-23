@@ -1,0 +1,10 @@
+{
+  "type": "rpc",
+  "id": "r-0024",
+  "method": "approve_review",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "diff_hash": "sha256:41aa07"
+  }
+}

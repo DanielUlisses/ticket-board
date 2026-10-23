@@ -1,0 +1,8 @@
+{
+  "type": "synthesis_failed",
+  "board_key": "dev-daniel/devboxes/tk-hub",
+  "nn": "05",
+  "backend": "claude",
+  "at": "2026-10-23T13:20:00Z",
+  "error": "agy: timed out after 300s; cursor: invalid JSON; claude: invalid JSON"
+}

@@ -1,0 +1,10 @@
+{
+  "type": "rpc",
+  "id": "r-0010",
+  "method": "resolve_nocode",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "reason": "Covered by ticket 13's popover."
+  }
+}

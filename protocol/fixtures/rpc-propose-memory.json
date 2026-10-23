@@ -1,0 +1,9 @@
+{
+  "type": "rpc",
+  "id": "r-0019",
+  "method": "propose_memory",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "text": "Export verbs print JSON only on stdout."
+  }
+}

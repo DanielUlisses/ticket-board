@@ -1,0 +1,16 @@
+{
+  "type": "rpc",
+  "id": "r-0023",
+  "method": "set_review_comments",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27",
+    "comments": [
+      {
+        "file": "hub-web/src/Settings.tsx",
+        "line": 12,
+        "text": "Label this input."
+      }
+    ]
+  }
+}
