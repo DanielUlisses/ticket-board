@@ -320,6 +320,22 @@ describe("ticket actions", () => {
     ]);
   });
 
+  it("refreshBrief posts to the board's brief route and tracks the rpc", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ rpcs: [sent("")] }, 202));
+    expect(await client.refreshBrief(KEY)).toBe(true);
+    expect(fetch.mock.calls[0][0]).toBe(`https://tk-hub.example.ts.net/api/boards/${KEY}/brief`);
+    expect(fetch.mock.calls[0][1]?.method).toBe("POST");
+    expect(store.view().pending).toHaveLength(1);
+  });
+
+  it("a refused brief refresh toasts and returns false", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ detail: "devbox dev-daniel is offline" }, 409));
+    expect(await client.refreshBrief(KEY)).toBe(false);
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("offline") });
+  });
+
   it("a result that beats its POST's answer leaves nothing pending", async () => {
     const { store, fetch, client } = setup();
     fetch.mockImplementationOnce(() => {

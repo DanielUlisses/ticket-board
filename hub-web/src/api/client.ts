@@ -211,6 +211,10 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
       });
       return res.rpcs;
     },
+    /** 📄 Board's ↻ Refresh: a board-brief synthesis run now; true when the hub took it. The brief itself arrives with the board's next snapshot. */
+    async refreshBrief(boardKey: string): Promise<boolean> {
+      return (await action("Board brief", boardUrl(boardKey, "brief"))) !== null;
+    },
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {
       stopped = false;

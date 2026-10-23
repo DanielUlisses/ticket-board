@@ -2,11 +2,12 @@ import { BoardBar, type OnFrontier } from "./BoardBar";
 import type { OnSync } from "./SyncBox";
 import { Card } from "./Card";
 import styles from "./CardGrid.module.css";
+import type { BriefApi } from "./BoardPanel";
 import type { PolicyApi } from "./PolicyPopover";
 import { useView } from "./StoreContext";
 
 /** The Cards page: one section per board, a grid of its tickets' cards. */
-export function CardGrid({ client, onFrontier, onSync }: { client?: PolicyApi; onFrontier?: OnFrontier; onSync?: OnSync } = {}) {
+export function CardGrid({ client, onFrontier, onSync }: { client?: PolicyApi & Partial<BriefApi>; onFrontier?: OnFrontier; onSync?: OnSync } = {}) {
   const { boards, devboxes } = useView();
   if (boards.length === 0) return <p className={styles.empty}>No tickets match these filters.</p>;
   return (

@@ -16,7 +16,7 @@ Reconnects with exponential backoff and jitter.
    "backoff_initial_s" (1), "backoff_max_s" (60), "rpc_timeout_s" (120),
    "rpc_synthesis_timeout_s" (600), "hello_timeout_s" (30), "export_timeout_s" (60),
    "export_call_timeout_s" (30), "launch_lock_wait_s" (5), "launch_timeout_s" (900),
-   "reservation_ttl_s" (120), "shutdown_grace_s" (60),
+   "reservation_ttl_s" (120), "shutdown_grace_s" (60), "brief_debounce_s" (30),
    "schema" (../protocol/schema.json)}
 Health and every board are checked against the schema before sending: a board
 that fails it is failed (keeps its last copy), never sent.
@@ -110,6 +110,7 @@ DEFAULTS = {
     "launch_timeout_s": 900,
     "reservation_ttl_s": 120,
     "shutdown_grace_s": 60,
+    "brief_debounce_s": 30,  # a board's brief refreshes this long after its last move
 }
 # The board-override keys set_policy may write, mirroring tk.sh's POLICY_CHECK; box-level
 # keys (max_parallel, usage_gate_pct, synthesis) are not among them.
@@ -518,6 +519,9 @@ class Daemon:
         self.ws = None  # the hub connection, while there is one (synthesis events)
         self.synthesizing: set[tuple[str, str]] = set()  # (board key, nn) running now
         self.synth_tasks: set[asyncio.Task] = set()  # runs started by a column move
+        self.brief_dirty: set[str] = set()  # moved while its brief was running
+        self.briefing: set[str] = set()  # board keys with a brief running now
+        self.brief_timers: dict[str, asyncio.Task] = {}  # debounce, per board key
         self.agy_timeout = env_agy_timeout()  # the box's, over every board's policy
         # Launches take a slot under launch_lock, before tk.sh runs; the slot is
         # held (reserved) until a snapshot shows the ticket out of backlog, or
@@ -536,6 +540,7 @@ class Daemon:
             "set_archived": self.rpc_set_archived,
             "set_policy": self.rpc_set_policy,
             "refine_with_comment": self.rpc_refine_with_comment,
+            "refresh_board_brief": self.rpc_refresh_board_brief,
             "set_task_done": self.rpc_set_task_done,
             "propose_memory": self.rpc_propose_memory,
             "open_pr": functools.partial(self.rpc_ship, "open_pr"),
@@ -635,6 +640,8 @@ class Daemon:
             removed = sorted(self.sent.keys() - boards.keys())
             held = sorted(failed - boards.keys())
             moved = self.moves_to_synthesize(boards)
+            for key in self.boards_that_moved(boards):
+                self.schedule_brief(key)
             want_full = full or self.need_full
             full = want_full and not held
             changed = [
@@ -1130,6 +1137,23 @@ class Daemon:
             "output_tail": f"{board['key']} #{ticket['nn']}: synthesized by {result.backend}",
         }
 
+    async def rpc_refresh_board_brief(self, ws, params: dict) -> dict:
+        board = self.board(params)
+        if board["key"] in self.briefing:
+            raise RpcRefused(f"the board brief of {board['key']} is already running")
+        if (timer := self.brief_timers.pop(board["key"], None)) is not None:
+            timer.cancel()  # this run covers what it was waiting for
+        try:
+            result = await self.refresh_brief(board)
+        except agy_runner.SynthesisFailed as e:
+            return {"ok": False, "exit_code": None, "output_tail": "",
+                    "reason": f"synthesis failed: {e}"}  # fmt: skip
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"{board['key']}: board brief by {result.backend}",
+        }
+
     async def rpc_set_task_done(self, ws, params: dict) -> dict:
         board, ticket = self.board_ticket(params)
         text, done = params.get("text"), params.get("done")
@@ -1171,12 +1195,73 @@ class Daemon:
             ]
         return moved
 
+    def boards_that_moved(self, boards: dict) -> list[str]:
+        """Keys of the boards where a known ticket changed column since the last
+        export (any column, unlike moves_to_synthesize); archived boards are left alone."""
+        moved = []
+        for key, b in boards.items():
+            old = self.sent.get(key)
+            if old is None or b["hub_meta"].get("archived"):
+                continue
+            before = {t["nn"]: t["col"] for t in old["tickets"]}
+            if any(before.get(t["nn"], t["col"]) != t["col"] for t in b["tickets"]):
+                moved.append(key)
+        return moved
+
+    def schedule_brief(self, key: str):
+        """Refresh the brief of board `key` once no ticket has moved for
+        brief_debounce_s: each move restarts the wait."""
+        if (timer := self.brief_timers.pop(key, None)) is not None:
+            timer.cancel()
+
+        async def later():
+            try:
+                await asyncio.sleep(self.cfg["brief_debounce_s"])
+                self.brief_timers.pop(key, None)
+                board = self.sent.get(key)
+                if not board or board["hub_meta"].get("archived"):
+                    return
+                if key in self.briefing:
+                    self.brief_dirty.add(key)  # the running one re-runs when it ends
+                    return
+                try:
+                    await self.refresh_brief(board)
+                except agy_runner.SynthesisFailed:
+                    pass  # recorded, and told to the hub
+                if self.ws is not None:
+                    await self.sync(self.ws, full=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — logged; the next move tries again
+                log.warning("board brief of %s: %s: %s", key, type(e).__name__, e)
+
+        task = asyncio.create_task(later())
+        self.brief_timers[key] = task
+        self.synth_tasks.add(task)
+        task.add_done_callback(self.synth_tasks.discard)
+
     def fail_interrupted(self, boards: list[dict]) -> bool:
         """Mark failed ("interrupted") each ticket of `boards` whose hub-meta still says
         `running` with no run of this daemon behind it: one a killed daemon left.
         True when any was."""
         found = False
         for b in boards:
+            brief = b["hub_meta"].get("board_brief")
+            if (isinstance(brief, dict) and brief.get("synthesis_status") == "running"
+                    and b["key"] not in self.briefing):  # fmt: skip
+                path = Path(b["board_path"])
+                try:
+                    meta = read_meta(path)
+                    entry = meta.get("board_brief")
+                    if (isinstance(entry, dict)
+                            and entry.get("synthesis_status") == "running"):  # fmt: skip
+                        entry.update(synthesis_status="failed",
+                                     synthesis_error="interrupted")  # fmt: skip
+                        write_meta(path, meta)
+                        found = True
+                        log.warning("board brief of %s was interrupted", b["key"])
+                except (OSError, ValueError) as e:
+                    log.warning("hub-meta of %s: %s", b["key"], e)
             for t in b["tickets"]:
                 if (t.get("synthesis_status") != "running"
                         or (b["key"], t["nn"]) in self.synthesizing):  # fmt: skip
@@ -1215,7 +1300,9 @@ class Daemon:
         self.synth_tasks.add(task)
         task.add_done_callback(self.synth_tasks.discard)
 
-    async def send_event(self, kind: str, key: str, nn: str, backend, error=None):
+    async def send_event(
+        self, kind: str, key: str, nn: str | None, backend, error=None
+    ):
         """synthesis_started / _finished / _failed to the hub, which relays it to the UI;
         dropped while there is no connection."""
         msg = {"type": f"synthesis_{kind}", "board_key": key, "nn": nn,
@@ -1338,6 +1425,83 @@ class Daemon:
             return result
         finally:
             self.synthesizing.discard((key, nn))
+
+    async def refresh_brief(self, board: dict) -> agy_runner.BriefResult:
+        """One board-brief run into the board's hub-meta.json `board_brief`. A failed
+        run keeps the previous brief's lines and marks it failed; raises
+        SynthesisFailed (after recording it). board.md is only read."""
+        key = board["key"]
+        if key in self.briefing:
+            raise ValueError(f"the board brief of {key} is already running")
+        path = Path(board["board_path"])
+        policy = synthesis_policy(board)
+        first = synthesis_backends(policy)[0]
+        self.briefing.add(key)
+
+        def record(**fields):
+            meta = read_meta(path)
+            old = meta.get("board_brief")
+            brief = {"landed": [], "in_flight": [], "needs_you": [], "next": [],
+                     "synthesis_backend": None, "updated_at": None}  # fmt: skip
+            brief.update(old if isinstance(old, dict) else {})
+            brief.update(fields)
+            meta["board_brief"] = brief
+            write_meta(path, meta)
+
+        try:
+            record(synthesis_status="running", synthesis_error=None)
+            await self.send_event("started", key, None, first)
+            try:
+                ctx = agy_runner.SynthesisContext(
+                    cwd=board["root"],
+                    ticket=f"{board.get('slug') or key}",
+                    project_memory=read_file(
+                        Path(board["root"]) / "docs/agents/project-memory.md"
+                    ),
+                    backends=synthesis_backends(policy),
+                    timeout=self.agy_timeout or self.policy_timeout(board, policy),
+                    commands=policy.get("commands")
+                    if isinstance(policy.get("commands"), dict)
+                    else {},
+                    board_md=board.get("board_md"),
+                    board_state="\n".join(
+                        f"{t['nn']} [{t['col']}] {t['title']}" for t in board["tickets"]
+                    ),
+                )
+                result = await agy_runner.synthesize_brief(ctx)
+            except asyncio.CancelledError:
+                with contextlib.suppress(Exception):
+                    record(synthesis_status="failed", synthesis_error="interrupted")
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        self.send_event("failed", key, None, None, "interrupted"), 5
+                    )
+                raise
+            except Exception as e:
+                error = str(e)
+                record(synthesis_status="failed", synthesis_error=error)
+                backend = (
+                    e.backend if isinstance(e, agy_runner.SynthesisFailed) else None
+                )
+                await self.send_event("failed", key, None, backend, error)
+                raise
+            record(
+                landed=result.landed,
+                in_flight=result.in_flight,
+                needs_you=result.needs_you,
+                next=result.next,
+                synthesis_backend=result.backend,
+                synthesis_status="ok",
+                synthesis_error=None,
+                updated_at=utc_now(),
+            )
+            await self.send_event("finished", key, None, result.backend)
+            return result
+        finally:
+            self.briefing.discard(key)
+            if key in self.brief_dirty:
+                self.brief_dirty.discard(key)
+                self.schedule_brief(key)
 
     async def rpc_propose_memory(self, ws, params: dict) -> dict:
         """Project memory only changes through a ticket: append the next-numbered

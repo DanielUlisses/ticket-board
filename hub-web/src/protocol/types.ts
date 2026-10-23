@@ -92,6 +92,19 @@ export type PolicyEdit = {
   [K in "forge" | "require_human_before_pr" | "auto_merge" | "night_shift" | "autonomy"]?: Policy[K] | null;
 };
 
+/** `$defs/board_brief`: the agy synthesis of where a board stands, in `hub_meta`. A failed run keeps the previous lines. */
+export interface BoardBrief {
+  landed: string[];
+  in_flight: string[];
+  needs_you: string[];
+  next: string[];
+  synthesis_backend: SynthesisBackend | null;
+  synthesis_status: SynthesisStatus;
+  updated_at: Timestamp | null;
+  /** Why the last run failed (synthesis_status failed). */
+  synthesis_error?: string | null;
+}
+
 /** `$defs/board` (subset). `stale`/`last_seen` are added by the hub. */
 export interface Board {
   key: string;
@@ -104,7 +117,9 @@ export interface Board {
   policy: Policy;
   /** Which layer each policy key came from; keys it omits are defaults. */
   policy_sources?: Partial<Record<keyof Policy, PolicySource>>;
-  hub_meta: { archived: boolean };
+  hub_meta: { archived: boolean; board_brief?: BoardBrief | null };
+  /** .scratch/<board>/board.md from the export; null when the board has none. */
+  board_md?: string | null;
   hash: string;
   exported_at: Timestamp;
   tickets: Ticket[];

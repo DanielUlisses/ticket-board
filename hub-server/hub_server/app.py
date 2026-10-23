@@ -543,6 +543,25 @@ def create_app(
             raise HTTPException(409, f"devbox {devbox} is offline") from None
         return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
 
+    @app.post("/api/boards/{board_key:path}/brief", status_code=202)
+    async def refresh_brief(board_key: str):
+        """refresh_board_brief on the board's devbox (box online only); the brief
+        arrives in the board's next snapshot, synthesis_* events on /ws/ui."""
+        board = hub.store.boards.get(board_key)
+        if board is None:
+            raise HTTPException(404, f"no board {board_key}")
+        devbox = board["devbox"]
+        try:
+            rpc_id = await hub.send_rpc(
+                devbox,
+                "refresh_board_brief",
+                {"board_key": board_key},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
+
     # Last, so /api and /ws routes win over the catch-all mount.
     if web_dist is not None and Path(web_dist).is_dir():
         app.mount("/", WebApp(directory=web_dist, html=True), name="web")

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { formatSeen } from "../columns";
 import type { Board, Devbox } from "../protocol/types";
 import styles from "./BoardBar.module.css";
@@ -6,6 +6,7 @@ import { DevboxPill } from "./DevboxPill";
 import { Spinner } from "./Spinner";
 import { useView } from "./StoreContext";
 import { SyncBox, type OnSync } from "./SyncBox";
+import { BoardPanel, type BriefApi } from "./BoardPanel";
 import { PolicyPopover, type PolicyApi } from "./PolicyPopover";
 
 /** Starts a board's ▶ Frontier; the button is busy until the returned promise settles. */
@@ -42,16 +43,18 @@ function FrontierButton({ boardKey, onFrontier }: { boardKey: string; onFrontier
 
 /**
  * A board's bar: id pill, title (the repo), devbox, an autonomy · forge tag, staleness,
- * ▶ Frontier and, with an api, the policy settings popover.
+ * ▶ Frontier, 📄 Board (board.md and the live brief) and, with an api, the policy settings popover.
  */
 export function BoardBar({ board, box, api, onFrontier, onSync }: {
   board: Board;
   box: Devbox | undefined;
-  api?: PolicyApi;
+  api?: PolicyApi & Partial<BriefApi>;
   onFrontier?: OnFrontier;
   onSync?: OnSync;
 }) {
   const [open, setOpen] = useState(false);
+  const [panel, setPanel] = useState(false);
+  const closePanel = useCallback(() => setPanel(false), []);
   return (
     <header className={styles.bar}>
       <span className={styles.meta}>
@@ -70,6 +73,10 @@ export function BoardBar({ board, box, api, onFrontier, onSync }: {
           </span>
         )}
         {onFrontier && <FrontierButton boardKey={board.key} onFrontier={onFrontier} />}
+        <button type="button" className={styles.frontier} aria-expanded={panel} onClick={() => setPanel(true)}>
+          📄 Board
+        </button>
+        {panel && <BoardPanel board={board} api={api} onClose={closePanel} />}
         {api && (
           <span className={styles.settings}>
             <button

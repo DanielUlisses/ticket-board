@@ -25,6 +25,9 @@ new_memory_rule?}, found as the CLI's JSON envelope's text (`response`, `result`
 duration_seconds, num_turns, usage}; an envelope whose `status` is anything else, or
 flagged is_error (claude, cursor-agent), is a failed backend.
 
+A board brief (`synthesize_brief`) is the same machinery with another prompt and another
+object: {landed, in_flight, needs_you, next}, each a list of short lines.
+
 Also the checklist rules, as pure functions: `merge_tasks` (a new run's items over the
 current checklist) and `set_task_done` (a tick).
 """
@@ -99,6 +102,8 @@ class SynthesisContext:
     backends: list[str] = field(default_factory=lambda: ["agy"])
     timeout: float = DEFAULT_TIMEOUT  # per backend
     commands: dict = field(default_factory=dict)  # backend -> {bin?, args?}
+    board_md: str | None = None  # a board brief: board.md, the board's purpose
+    board_state: str | None = None  # a board brief: one line per ticket
 
 
 @dataclass
@@ -110,6 +115,16 @@ class SynthesisResult:
     manual_tasks: list[str]
     new_memory_rule: str | None
     attempts: list[str] = field(default_factory=list)  # backends that failed first
+
+
+@dataclass
+class BriefResult:
+    backend: str
+    landed: list[str]
+    in_flight: list[str]
+    needs_you: list[str]
+    next: list[str]
+    attempts: list[str] = field(default_factory=list)
 
 
 class SynthesisFailed(Exception):
@@ -130,7 +145,24 @@ class ConfigError(Exception):
 
 
 async def synthesize(ctx: SynthesisContext) -> SynthesisResult:
-    prompt = build_prompt(ctx)
+    backend, obj, attempts = await _first_good(ctx, build_prompt(ctx), _is_synthesis)
+    return _result(backend, obj, ctx.report_md, attempts)
+
+
+async def synthesize_brief(ctx: SynthesisContext) -> BriefResult:
+    """The board brief of `ctx` (board_md, board_state); same backends and failures."""
+    backend, obj, attempts = await _first_good(ctx, build_brief_prompt(ctx), _is_brief)
+    return BriefResult(
+        backend,
+        *(_strings(obj[k]) for k in ("landed", "in_flight", "needs_you", "next")),
+        attempts=attempts,
+    )
+
+
+async def _first_good(
+    ctx: SynthesisContext, prompt: str, valid
+) -> tuple[str, dict, list]:
+    """(backend, its output object, failed attempts) of the first backend that works."""
     attempts: list[str] = []
     for backend in ctx.backends:
         try:
@@ -140,12 +172,35 @@ async def synthesize(ctx: SynthesisContext) -> SynthesisResult:
             attempts.append(f"{backend}: {e}")
             continue
         try:
-            out = await _run_backend(argv, ctx)
+            out = await _run_backend(argv, ctx, valid)
         except BackendFailed as e:
             attempts.append(f"{backend}: {e}")
             continue
-        return _result(backend, out, ctx.report_md, attempts)
+        return backend, out, attempts
     raise SynthesisFailed(attempts, ctx.backends[-1] if ctx.backends else None)
+
+
+BRIEF_INSTRUCTIONS = """\
+You write the BOARD BRIEF of a ticket-skill board, for the developer coming back after \
+a break, from the material below. Only read: do not edit files or run commands.
+Answer with ONE JSON object and nothing else:
+{"landed": ["<short line: what is done and merged>", ...],
+ "in_flight": ["<short line: what is being worked on or reviewed>", ...],
+ "needs_you": ["<short line: what waits for the developer, with the ticket number>", ...],
+ "next": ["<short line: what to launch or decide next>", ...]}
+Each list holds at most 6 lines; [] when there is nothing. Never rewrite board.md."""
+
+
+def build_brief_prompt(ctx: SynthesisContext) -> str:
+    parts = [BRIEF_INSTRUCTIONS]
+    for title, text in [
+        (f"Board {ctx.ticket}", ctx.board_md),
+        ("Tickets", ctx.board_state),
+        ("Project memory", ctx.project_memory),
+    ]:
+        body = _cut(text, SECTION_BYTES, False) if text and text.strip() else "(none)"
+        parts.append(f"## {title}\n\n{body}")
+    return _cut("\n\n".join(parts), MAX_PROMPT_BYTES - 1, False)
 
 
 def build_prompt(ctx: SynthesisContext) -> str:
@@ -209,7 +264,7 @@ def command(backend: str, ctx: SynthesisContext, prompt: str) -> list[str]:
     return [cfg["bin"], *args, prompt]
 
 
-async def _run_backend(argv: list[str], ctx: SynthesisContext) -> dict:
+async def _run_backend(argv: list[str], ctx: SynthesisContext, valid) -> dict:
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -242,7 +297,7 @@ async def _run_backend(argv: list[str], ctx: SynthesisContext) -> dict:
         raise BackendFailed(f"exited {proc.returncode}: {stderr.strip()[-TAIL:]}")
     if "AGY_ERROR" in stderr:
         raise BackendFailed(stderr.strip()[-TAIL:])
-    found = parse_output(out.decode(errors="replace")[:MAX_OUTPUT_CHARS])
+    found = parse_output(out.decode(errors="replace")[:MAX_OUTPUT_CHARS], valid)
     if found is None:
         raise BackendFailed("invalid output")
     return found
@@ -277,12 +332,12 @@ def kill_session(sid: int):
 
 
 # ---- output -------------------------------------------------------------------------
-def parse_output(text: str) -> dict | None:
+def parse_output(text: str, valid=None) -> dict | None:
     """The synthesis object in a CLI's output: the bare object, inside its JSON
     envelope's text, or a JSON block anywhere in text; None when there is none. An
     envelope flagged is_error, or with a `status` other than SUCCESS, never counts."""
     for obj in _objects(text):
-        if (found := _synthesis_in(obj, 0)) is not None:
+        if (found := _synthesis_in(obj, 0, valid or _is_synthesis)) is not None:
             return found
     return None
 
@@ -304,10 +359,10 @@ def _objects(text: str):
         i = text.find("{", end)
 
 
-def _synthesis_in(obj, depth: int) -> dict | None:
+def _synthesis_in(obj, depth: int, valid) -> dict | None:
     if not isinstance(obj, dict) or depth > 3 or obj.get("is_error") is True:
         return None
-    if _is_synthesis(obj):
+    if valid(obj):
         return obj
     if depth == 0 and obj.get("status", "SUCCESS") != "SUCCESS":
         return None
@@ -315,7 +370,7 @@ def _synthesis_in(obj, depth: int) -> dict | None:
         value = obj.get(key)
         inner = _objects(value) if isinstance(value, str) else [value]
         for candidate in inner:
-            if (found := _synthesis_in(candidate, depth + 1)) is not None:
+            if (found := _synthesis_in(candidate, depth + 1, valid)) is not None:
                 return found
     return None
 
@@ -330,6 +385,17 @@ def _is_synthesis(obj: dict) -> bool:
         and isinstance(obj.get("manual_tasks"), list)
         and isinstance(obj.get("new_memory_rule"), str | None)
     )
+
+
+def _is_brief(obj: dict) -> bool:
+    return all(
+        isinstance(obj.get(k), list) and all(isinstance(x, str) for x in obj[k])
+        for k in ("landed", "in_flight", "needs_you", "next")
+    )
+
+
+def _strings(items: list[str]) -> list[str]:
+    return [t.strip() for t in items if t.strip()]
 
 
 def _lines(text: str, n: int) -> str:
