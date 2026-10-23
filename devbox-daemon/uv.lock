@@ -36,7 +36,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "websockets", specifier = ">=13" }]
+requires-dist = [{ name = "websockets", specifier = ">=17" }]
 
 [package.metadata.requires-dev]
 dev = [

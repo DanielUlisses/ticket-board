@@ -5,7 +5,7 @@ description = "tk-hub devbox daemon: exports this box's boards to the hub and ru
 requires-python = ">=3.12"
 # Runtime dependencies are limited to websockets (board.md, Shape).
 dependencies = [
-    "websockets>=13",
+    "websockets>=17",
 ]
 
 [dependency-groups]
