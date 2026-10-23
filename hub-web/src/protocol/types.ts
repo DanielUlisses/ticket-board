@@ -153,20 +153,27 @@ export interface BoardsResponse {
 }
 
 /**
- * `GET /api/boards/{board_key}/tickets/{nn}/report`. ASSUMPTION: ticket 08
- * names the endpoint but not the shape; `body` is the raw ticket file.
+ * `GET /api/boards/{board_key}/tickets/{nn}/report` (`$defs/rest_report`);
+ * `body` is the raw ticket file, null when the daemon doesn't send it.
  */
 export interface ReportResponse {
+  board_key: string;
+  nn: string;
+  title: string;
   full_report_md: string | null;
-  body: string;
+  body: string | null;
 }
 
-/**
- * One row of `GET /api/boards/{board_key}/tickets/{nn}/activity` (the hub's
- * `ticket_moved` log, oldest first). ASSUMPTION: a bare array, shape as TicketMoved.
- */
+/** One `ticket_moved` row of the activity endpoint (the hub's log). */
 export interface ActivityEvent {
   from: Column;
   to: Column;
   at: Timestamp;
+}
+
+/** `GET /api/boards/{board_key}/tickets/{nn}/activity` (`$defs/rest_activity`), oldest first. */
+export interface ActivityResponse {
+  board_key: string;
+  nn: string;
+  events: ActivityEvent[];
 }

@@ -7,7 +7,7 @@
 //   - POST /api/scan with `{"devbox": "<name>" | null}` (null: every box), any
 //     2xx meaning the rescan was sent; the outcome arrives later as rpc_result;
 //   - errors carry FastAPI's `{"detail": "..."}`.
-import type { ActivityEvent, BoardsResponse, ReportResponse, UiEvent } from "../protocol/types";
+import type { ActivityEvent, ActivityResponse, BoardsResponse, ReportResponse, UiEvent } from "../protocol/types";
 import type { Store } from "../store/store";
 
 /** The part of the browser WebSocket the client uses. */
@@ -97,7 +97,8 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     /** The ticket's full report and raw body (ticket sheet's report modal). */
     report: (boardKey: string, nn: string) => getJson<ReportResponse>(ticketUrl(boardKey, nn, "report")),
     /** The ticket's column moves, oldest first. */
-    activity: (boardKey: string, nn: string) => getJson<ActivityEvent[]>(ticketUrl(boardKey, nn, "activity")),
+    activity: async (boardKey: string, nn: string): Promise<ActivityEvent[]> =>
+      (await getJson<ActivityResponse>(ticketUrl(boardKey, nn, "activity"))).events,
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {
       stopped = false;
