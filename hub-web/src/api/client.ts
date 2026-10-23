@@ -157,6 +157,21 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         store.toast({ kind: "error", text: `↻ Scan failed: ${(err as Error).message}` });
       }
     },
+    /** Archive or restore a board: the hub asks its box's daemon (box online only). */
+    async setArchived(boardKey: string, archived: boolean) {
+      const verb = archived ? "Archive" : "Restore";
+      try {
+        const res = await doFetch(`${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/archive`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ archived }),
+        });
+        if (res.ok) store.toast({ kind: "ok", text: `${verb} sent for ${boardKey}` });
+        else store.toast({ kind: "error", text: `${verb} failed: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `${verb} failed: ${(err as Error).message}` });
+      }
+    },
   };
 }
 

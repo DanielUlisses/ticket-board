@@ -764,3 +764,111 @@ def test_the_daemons_schema_check_agrees_with_jsonschema_on_every_fixture():
     for f in files:
         msg = json.loads(f.read_text())
         assert (check.errors(msg) == []) == VALIDATOR.is_valid(msg), f.name
+
+
+def test_set_archived_writes_hub_meta_keeping_other_keys_and_re_exports(box, cert):
+    d = box.board("alpha", "b", [row("01")])
+    (d / "hub-meta.json").write_text(json.dumps({"tickets": {"01": {"x": 1}}}))
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            out = []
+            for i, flag in enumerate([True, False]):
+                params = {"board_key": "dev-test/alpha/b", "archived": flag}
+                await hub.send(
+                    {"type": "rpc", "id": f"r-{i}", "method": "set_archived",
+                     "params": params}
+                )  # fmt: skip
+                result = await hub.next("rpc_result")
+                snap = await hub.next("snapshot")
+                out.append(
+                    (result, snap, json.loads((d / "hub-meta.json").read_text()))
+                )
+            return out
+
+    (r1, s1, m1), (_r2, s2, m2) = run(scenario())
+
+    assert r1["ok"] is True
+    assert m1 == {"archived": True, "tickets": {"01": {"x": 1}}}
+    assert s1["boards"][0]["hub_meta"]["archived"] is True
+    assert m2["archived"] is False and m2["tickets"] == {"01": {"x": 1}}
+    assert s2["boards"][0]["hub_meta"]["archived"] is False
+
+
+def test_set_archived_refuses_an_unknown_board(box, cert):
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            await hub.send(
+                {"type": "rpc", "id": "r-1", "method": "set_archived",
+                 "params": {"board_key": "dev-test/alpha/nope", "archived": True}}
+            )  # fmt: skip
+            return await hub.next("rpc_result")
+
+    result = run(scenario())
+
+    assert result["ok"] is False
+    assert "nope" in result["reason"]
+
+
+def _set_archived(box, cert, params, before_rpc=None):
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            if before_rpc:
+                before_rpc()
+            await hub.send(
+                {"type": "rpc", "id": "r-1", "method": "set_archived", "params": params}
+            )  # fmt: skip
+            return await hub.next("rpc_result")
+
+    return run(scenario())
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"board_key": "dev-test/alpha/b", "archived": "yes"},
+        {"board_key": "dev-test/alpha/b", "archived": 1},
+        {"board_key": "dev-test/alpha/b"},
+        {"board_key": "dev-test/alpha/../b", "archived": True},
+        {"board_key": "dev-test/alpha/", "archived": True},
+        {"board_key": "dev-test/other/b", "archived": True},
+        {"board_key": 7, "archived": True},
+    ],
+)
+def test_set_archived_refuses_bad_params_or_unknown_key(box, cert, params):
+    d = box.board("alpha", "b", [row("01")])
+
+    result = _set_archived(box, cert, params)
+
+    assert result["ok"] is False
+    assert not (d / "hub-meta.json").exists()
+
+
+def test_set_archived_creates_a_missing_hub_meta(box, cert):
+    d = box.board("alpha", "b", [row("01")])
+    assert not (d / "hub-meta.json").exists()
+
+    result = _set_archived(
+        box, cert, {"board_key": "dev-test/alpha/b", "archived": True}
+    )
+
+    assert result["ok"] is True
+    assert json.loads((d / "hub-meta.json").read_text()) == {"archived": True}
+
+
+def test_set_archived_refuses_a_non_object_hub_meta(box, cert):
+    d = box.board("alpha", "b", [row("01")])
+    # Corrupted after the daemon has already reported the board.
+    result = _set_archived(
+        box,
+        cert,
+        {"board_key": "dev-test/alpha/b", "archived": True},
+        before_rpc=lambda: (d / "hub-meta.json").write_text("[1, 2]"),
+    )
+
+    assert result["ok"] is False
+    assert "not a JSON object" in result["reason"]
+    assert (d / "hub-meta.json").read_text() == "[1, 2]"

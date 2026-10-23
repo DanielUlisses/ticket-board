@@ -780,6 +780,10 @@
         }
       }
     },
+    "rest_archive": {
+      "description": "REST: POST /api/boards/{key}/archive, body {archived: boolean} -> 202, one set_archived rpc to the board's devbox; its rpc_result arrives on /ws/ui. 404 unknown board, 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
     "rest_set_policy": {
       "description": "REST: POST /api/boards/{key}/policy (body {values}: the board-override keys to change, as in params_set_policy) -> 202. One set_policy rpc to the board's devbox; its rpc_result arrives on /ws/ui, the new resolved policy in the board's next snapshot.",
       "type": "object",

@@ -156,6 +156,10 @@ def bearer(ws: WebSocket) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
+class ArchiveRequest(BaseModel):
+    archived: bool
+
+
 class ScanRequest(BaseModel):
     devbox: str | None = None
 
@@ -372,6 +376,25 @@ def create_app(
         except DevboxOffline:
             raise HTTPException(404, f"devbox {devbox} is not connected") from None
         return {"rpcs": rpcs}
+
+    @app.post("/api/boards/{board_key:path}/archive", status_code=202)
+    async def archive(board_key: str, request: ArchiveRequest):
+        """set_archived on the board's devbox (box online only); the daemon
+        re-exports, so the flag reaches the hub in the next snapshot."""
+        board = hub.store.boards.get(board_key)
+        if board is None:
+            raise HTTPException(404, f"no board {board_key}")
+        devbox = board["devbox"]
+        try:
+            rpc_id = await hub.send_rpc(
+                devbox,
+                "set_archived",
+                {"board_key": board_key, "archived": request.archived},
+                board_key=board_key,
+            )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
 
     # Last, so /api and /ws routes win over the catch-all mount.
     if web_dist is not None and Path(web_dist).is_dir():

@@ -117,6 +117,21 @@ describe("store", () => {
       expect(store.view().boards.map((b) => b.key)).not.toContain(stale.board.key);
     });
 
+    it("an archived board leaves the views and counts and is listed in archivedBoards", () => {
+      const store = loaded();
+      const before = store.view().counts.all;
+      const board = store.view().boards[0];
+      store.apply({ type: "board_synced", board: { ...board, hub_meta: { ...board.hub_meta, archived: true } } });
+      const view = store.view();
+      expect(view.archivedBoards.map((b) => b.key)).toEqual([board.key]);
+      expect(view.boards.map((b) => b.key)).not.toContain(board.key);
+      expect(view.allBoards.map((b) => b.key)).not.toContain(board.key);
+      expect(view.counts.all).toBe(before - board.tickets.length);
+      store.apply({ type: "board_synced", board });
+      expect(store.view().archivedBoards).toEqual([]);
+      expect(store.view().counts.all).toBe(before);
+    });
+
     it("devbox_status offline greys that box's boards with its last-seen, online clears it", () => {
       const store = loaded();
       store.apply({ ...fixture<DevboxStatus>("devbox-status-online"), online: false, health: null, last_seen: "2026-10-23T14:05:00Z" });
