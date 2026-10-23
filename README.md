@@ -42,7 +42,10 @@ and the web targets run `npm ci` when `node_modules` is missing.
 
 Per component:
 
-- **hub-server**: `cd hub-server && uv run pytest`
+- **hub-server**: `cd hub-server && uv run pytest`. Run it with
+  `uv run hub-server serve --host-name tk-hub.<tailnet>.ts.net` (or set
+  `TK_HUB_HOSTNAMES`, comma-separated): any other `Host` is refused, so without it
+  only `localhost`/`127.0.0.1` work. Daemon tokens: `uv run hub-server token add <devbox>`.
 - **devbox-daemon**: `cd devbox-daemon && uv run pytest`
 - **hub-web**: `cd hub-web && npm ci`, then `npm run dev` (dev server), `npm test`, `npm run lint` or `npm run build` (writes `dist/`, never committed)
 
@@ -58,6 +61,8 @@ Per component:
 - **hub → UI** (`/ws/ui`): `board_synced`, `board_removed`, `ticket_moved`,
   `synthesis_started` / `synthesis_finished` / `synthesis_failed`, `rpc_result`,
   `devbox_status`.
+- **hub REST** (`/api`): response bodies are `$defs/rest_boards`, `rest_report`,
+  `rest_activity`, `rest_scan`, and `rest_error` for any error.
 
 A board snapshot (`$defs/board`) is `tk.sh export <board>` (ticket-skill) merged with
 `docs/agents/project-memory.md`, `.scratch/<board>/hub-meta.json` and the resolved

@@ -3,17 +3,37 @@ name = "hub-server"
 version = "0.1.0"
 description = "tk-hub server: receives board snapshots from devbox daemons, serves the web UI"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115",
+    "jsonschema>=4.23",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.scripts]
+hub-server = "hub_server.cli:main"
 
 [dependency-groups]
 dev = [
-    "jsonschema>=4.23",
+    "httpx2>=2.16",
     "pytest>=8.3",
     "ruff>=0.8",
 ]
 
-[tool.uv]
-package = false
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hub_server"]
+
+# The protocol contract travels with the package as hub_server/schema.json,
+# which hub_server/protocol.py prefers: the sdist copies it from ../protocol, and
+# hatch_build.py adds it to a wheel built straight from the checkout (a wheel
+# built from the sdist already has it in hub_server/).
+[tool.hatch.build.targets.sdist.force-include]
+"../protocol/schema.json" = "hub_server/schema.json"
+
+[tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
