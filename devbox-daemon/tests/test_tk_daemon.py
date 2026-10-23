@@ -84,6 +84,9 @@ POLICY = {"forge": "none", "require_human_before_pr": True, "auto_merge": False,
 
 @contextlib.asynccontextmanager
 async def daemon(box, hub, cert, name=NAME, **config):
+    # test-only: not a config key (a user's config.json cannot set it), a flag
+    racy = config.pop("diff_racy_window_test_s", None)
+    flags = [] if racy is None else ["--diff-racy-window-test-s", str(racy)]
     box.write(".config/tk-daemon/config.json", {
         "url": f"wss://{name}:{hub.port}/ws/daemon", "ip": "127.0.0.1",
         "token_ref": TOKEN_REF, "devbox": "dev-test",
@@ -94,7 +97,7 @@ async def daemon(box, hub, cert, name=NAME, **config):
     box.daemon_log = box.tmp / "daemon.log"
     with open(box.daemon_log, "wb") as log:  # noqa: ASYNC230 — a local file, once
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, str(DAEMON), env=env, stdout=log, stderr=log
+            sys.executable, str(DAEMON), *flags, env=env, stdout=log, stderr=log
         )
         try:
             yield proc

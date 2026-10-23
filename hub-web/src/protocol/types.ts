@@ -72,6 +72,8 @@ export interface Ticket {
   new_memory_rule?: string | null;
   /** Why the last synthesis run failed (synthesis_status failed). */
   synthesis_error?: string | null;
+  /** The ticket's worktree on its box; empty before launch. The Review tab needs one. */
+  worktree?: string;
 }
 
 /** `$defs/policy` (subset): `tk.sh policy <board>`, resolved. */
@@ -254,6 +256,41 @@ export interface ActivityResponse {
   board_key: string;
   nn: string;
   events: ActivityEvent[];
+}
+
+/** One changed file of `get_diff` (`$defs/rest_diff` `files`); untracked files are `A`. */
+export interface DiffFile {
+  path: string;
+  old_path?: string;
+  status: "M" | "A" | "D" | "R";
+  added: number;
+  removed: number;
+  binary: boolean;
+  /** An untracked directory that is itself a git repo (listed with a trailing slash): no diff to show. */
+  nested_repo?: boolean;
+}
+
+/** `GET /api/boards/{board_key}/tickets/{nn}/diff` (`$defs/rest_diff`): the file list. */
+export interface DiffListResponse {
+  board_key: string;
+  nn: string;
+  base: string;
+  /** Content hash of the whole diff, untracked files included. */
+  diff_hash: string;
+  files: DiffFile[];
+  /** The daemon listed only its first `diff_max_files` files; `total_files` is the real count. */
+  truncated?: boolean;
+  total_files?: number;
+}
+
+/** The same with `?file=`: that file's entry and its unified diff, or a stub (empty diff). */
+export interface DiffFileResponse extends DiffFile {
+  board_key: string;
+  nn: string;
+  base: string;
+  diff_hash: string;
+  diff: string;
+  stub: "binary" | "over_cap" | "nested_repo" | null;
 }
 
 /** `$defs/params_launch_ticket` `type`: tk.sh launch --type. */

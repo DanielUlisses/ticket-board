@@ -21,6 +21,7 @@ const REPORT: ReportResponse = {
 function stubClient(): DetailApi {
   return {
     activity: async () => [],
+    diff: (async () => ({ files: [] })) as unknown as DetailApi["diff"],
     report: async () => REPORT,
     launch: async () => {},
     say: async () => null,
@@ -39,6 +40,7 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
       { from: "backlog", to: "working", at: "2026-10-23T14:02:00Z" },
       { from: "working", to: "review", at: "2026-10-23T15:40:00Z" },
     ]),
+    diff: vi.fn().mockResolvedValue({ files: [{ path: "a.ts", status: "M", added: 1, removed: 0, binary: false }] }),
     report: vi.fn().mockResolvedValue(REPORT),
     refine: vi.fn().mockResolvedValue(true),
     setTaskDone: vi.fn().mockResolvedValue(true),
@@ -76,6 +78,56 @@ describe("TicketSheet", () => {
     screen.getAllByRole("button", { name: new RegExp(`^${nn} `) }).find((e) => e.tagName === "ARTICLE")!;
   const puck = (nn: string) =>
     screen.getAllByRole("button", { name: new RegExp(`^${nn} `) }).find((e) => e.tagName === "DIV")!;
+
+  it("has a Review tab on a ticket with a worktree, loading the diff only when it is opened", async () => {
+    const { client } = setup([KEY, "01"]);
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(within(sheet()).getByRole("region", { name: "Synthesis" })).toBeInTheDocument();
+    expect(client.diff).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Review" }));
+    expect(await screen.findByRole("button", { name: /a\.ts/ })).toBeInTheDocument();
+    expect(client.diff).toHaveBeenCalledWith(KEY, "01");
+    expect(within(sheet()).queryByRole("region", { name: "Synthesis" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    expect(within(sheet()).getByRole("region", { name: "Synthesis" })).toBeInTheDocument();
+  });
+
+  it("follows the WAI-ARIA tabs pattern: linked ids, roving tabindex, arrow/Home/End keys", () => {
+    setup([KEY, "01"]);
+    const overview = screen.getByRole("tab", { name: "Overview" });
+    const review = screen.getByRole("tab", { name: "Review" });
+    expect(overview).toHaveAttribute("tabindex", "0");
+    expect(review).toHaveAttribute("tabindex", "-1");
+    const panel = screen.getByRole("tabpanel");
+    expect(panel).toHaveAttribute("id", overview.getAttribute("aria-controls"));
+    expect(panel).toHaveAttribute("aria-labelledby", overview.id);
+    expect(review).not.toHaveAttribute("aria-controls"); // its panel is not rendered
+
+    fireEvent.keyDown(overview, { key: "ArrowRight" });
+    expect(review).toHaveAttribute("aria-selected", "true");
+    expect(review).toHaveFocus();
+    expect(review).toHaveAttribute("tabindex", "0");
+    expect(overview).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", review.id);
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("id", review.getAttribute("aria-controls"));
+    expect(overview).not.toHaveAttribute("aria-controls");
+
+    fireEvent.keyDown(review, { key: "ArrowRight" }); // wraps
+    expect(overview).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(overview, { key: "ArrowLeft" }); // wraps back
+    expect(review).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(review, { key: "Home" });
+    expect(overview).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(overview, { key: "End" });
+    expect(review).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("has no Review tab on a ticket without a worktree", () => {
+    setup([KEY, "04"]);
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+  });
 
   it("opens from a card and from a puck", () => {
     setup(null);

@@ -20,6 +20,7 @@ const PR: Pr = {
 function setup(boardKey: string, patch: Partial<Ticket>) {
   const client: DetailApi = {
     activity: vi.fn().mockResolvedValue([]),
+    diff: vi.fn().mockResolvedValue({ files: [] }),
     report: vi.fn().mockResolvedValue({ full_report_md: null, body: "" }),
     launch: vi.fn().mockResolvedValue(undefined),
     proposeMemory: vi.fn().mockResolvedValue(true),

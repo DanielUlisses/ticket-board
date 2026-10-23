@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import type { HubClient } from "../api/client";
 import { COLUMN_META } from "../columns";
 import type { ActivityEvent, Board, Column, Ticket } from "../protocol/types";
@@ -6,6 +6,7 @@ import { Glyph } from "./Glyph";
 import { LaunchControl } from "./LaunchControl";
 import { Markdown } from "./Markdown";
 import { PaneTail } from "./PaneTail";
+import { ReviewTab } from "./ReviewTab";
 import { Relay } from "./Relay";
 import { ReportModal } from "./ReportModal";
 import { ShipActions } from "./ShipActions";
@@ -15,7 +16,7 @@ import styles from "./TicketSheet.module.css";
 export { PANE_MS } from "./PaneTail";
 
 /** The hub calls the sheet makes. */
-export type DetailApi = Pick<HubClient, "activity" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone" | "ship" | "resolveNoCode">;
+export type DetailApi = Pick<HubClient, "activity" | "diff" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone" | "ship" | "resolveNoCode">;
 
 /** Columns where the ticket has an agent: relay to it, tail its pane. */
 const WITH_AGENT: ReadonlySet<Column> = new Set(["needs", "working", "review", "human"]);
@@ -253,6 +254,23 @@ function Checklist({ board, ticket, api }: { board: Board; ticket: Ticket; api: 
 function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
   const store = useStore();
   const [report, setReport] = useState(false);
+  const [tab, setTab] = useState<"overview" | "review">("overview");
+  const tabsId = useId();
+  const tabRefs = useRef<Partial<Record<"overview" | "review", HTMLButtonElement | null>>>({});
+  const TABS = ["overview", "review"] as const;
+  const onTabKey = (e: ReactKeyEvent, t: (typeof TABS)[number]) => {
+    const i = TABS.indexOf(t);
+    const next =
+      e.key === "ArrowRight" ? TABS[(i + 1) % TABS.length]
+      : e.key === "ArrowLeft" ? TABS[(i + TABS.length - 1) % TABS.length]
+      : e.key === "Home" ? TABS[0]
+      : e.key === "End" ? TABS[TABS.length - 1]
+      : null;
+    if (!next) return;
+    e.preventDefault();
+    setTab(next);
+    tabRefs.current[next]?.focus();
+  };
   const close = useCallback(() => store.closeTicket(), [store]);
 
   useEffect(() => {
@@ -294,7 +312,48 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
           </button>
         </header>
 
-        <div className={styles.scroll}>
+        {ticket.worktree && (
+          <div className={styles.tabs} role="tablist" aria-label="Ticket views">
+            {TABS.map((t) => (
+              <button
+                key={t}
+                ref={(el) => {
+                  tabRefs.current[t] = el;
+                }}
+                type="button"
+                role="tab"
+                id={`${tabsId}-tab-${t}`}
+                aria-selected={tab === t}
+                aria-controls={tab === t ? `${tabsId}-panel-${t}` : undefined}
+                tabIndex={tab === t ? 0 : -1}
+                className={styles.tab}
+                onClick={() => setTab(t)}
+                onKeyDown={(e) => onTabKey(e, t)}
+              >
+                {t === "overview" ? "Overview" : "Review"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {ticket.worktree && tab === "review" ? (
+          <div
+            className={styles.scroll}
+            role="tabpanel"
+            id={`${tabsId}-panel-review`}
+            aria-labelledby={`${tabsId}-tab-review`}
+          >
+            <ReviewTab boardKey={board.key} nn={ticket.nn} load={api.diff} />
+          </div>
+        ) : (
+        <div
+          className={styles.scroll}
+          {...(ticket.worktree && {
+            role: "tabpanel",
+            id: `${tabsId}-panel-overview`,
+            "aria-labelledby": `${tabsId}-tab-overview`,
+          })}
+        >
           <section className={styles.card} aria-label="Synthesis">
             <h3 className={styles.h}>Synthesis</h3>
             {ticket.summary ? (
@@ -368,6 +427,7 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
             )}
           </section>
         </div>
+        )}
 
         <footer className={styles.foot} aria-label="Actions">
           <Actions board={board} ticket={ticket} api={api} />

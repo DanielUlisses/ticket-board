@@ -13,6 +13,8 @@ import type {
   ActionResponse,
   ActivityEvent,
   ActivityResponse,
+  DiffFileResponse,
+  DiffListResponse,
   BoardsResponse,
   PolicyEdit,
   ReportResponse,
@@ -158,6 +160,13 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     return (await res.json()) as T;
   }
 
+  /** The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff. */
+  function diff(boardKey: string, nn: string): Promise<DiffListResponse>;
+  function diff(boardKey: string, nn: string, file: string): Promise<DiffFileResponse>;
+  function diff(boardKey: string, nn: string, file?: string) {
+    return getJson(ticketUrl(boardKey, nn, "diff") + (file === undefined ? "" : `?file=${encodeURIComponent(file)}`));
+  }
+
   return {
     /** The ticket's full report and raw body (ticket sheet's report modal). */
     report: (boardKey: string, nn: string) => getJson<ReportResponse>(ticketUrl(boardKey, nn, "report")),
@@ -171,6 +180,8 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     /** Ticks (or unticks) a checklist item, matched by its text, in the box's hub-meta. */
     setTaskDone: (boardKey: string, nn: string, text: string, done: boolean) =>
       postToast(ticketUrl(boardKey, nn, "tasks"), { text, done }, "Checklist tick"),
+    /** The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff (read-only). */
+    diff,
     /** The ticket's column moves, oldest first. */
     activity: async (boardKey: string, nn: string): Promise<ActivityEvent[]> =>
       (await getJson<ActivityResponse>(ticketUrl(boardKey, nn, "activity"))).events,
