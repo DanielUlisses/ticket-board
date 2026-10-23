@@ -36,3 +36,12 @@
 .plain[data-health="offline"] .dot,
 .pill[data-health="refused"] .dot,
 .plain[data-health="refused"] .dot { background: var(--icon-urgent); }
+.meter {
+  color: var(--text-muted);
+}
+.meter[data-usage="unknown"],
+.meter[data-usage="stale"] {
+  color: var(--text-faint);
+  font-style: italic;
+}
+.meter[data-usage="stale"] { text-decoration: underline dotted; }

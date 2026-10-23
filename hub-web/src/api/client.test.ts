@@ -169,4 +169,12 @@ describe("ticket detail endpoints", () => {
       "https://hub/api/boards/dev-daniel/repo/board/tickets/01/report",
     ]);
   });
+
+  it("returns the events of the hub's activity response", async () => {
+    const events = [{ from: "backlog", to: "working", at: "2026-10-23T14:02:00Z" }];
+    const body = { board_key: "dev-daniel/repo/board", nn: "01", events };
+    const fetch = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    const client = createHubClient(createStore(), { origin: "https://hub", fetch: fetch as unknown as typeof globalThis.fetch });
+    expect(await client.activity("dev-daniel/repo/board", "01")).toEqual(events);
+  });
 });

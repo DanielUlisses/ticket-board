@@ -106,10 +106,25 @@ export interface Board {
   last_seen?: Timestamp | null;
 }
 
+/** `$defs/usage_window`. */
+export interface UsageWindow {
+  used_percentage: number;
+  resets_at: Timestamp;
+}
+
+/** `$defs/usage`: unknown has null windows; stale is older than 30 min while agents run. */
+export interface Usage {
+  state: "ok" | "unknown" | "stale";
+  five_hour: UsageWindow | null;
+  seven_day: UsageWindow | null;
+  updated_at: Timestamp | null;
+}
+
 /** `$defs/health` (subset). */
 export interface Health {
   daemon_version: string;
   herdr: { ok: boolean; status: string };
+  usage?: Usage;
   running: number;
 }
 
@@ -174,20 +189,27 @@ export interface BoardsResponse {
 }
 
 /**
- * `GET /api/boards/{board_key}/tickets/{nn}/report`. ASSUMPTION: ticket 08
- * names the endpoint but not the shape; `body` is the raw ticket file.
+ * `GET /api/boards/{board_key}/tickets/{nn}/report` (`$defs/rest_report`);
+ * `body` is the raw ticket file, null when the daemon doesn't send it.
  */
 export interface ReportResponse {
+  board_key: string;
+  nn: string;
+  title: string;
   full_report_md: string | null;
-  body: string;
+  body: string | null;
 }
 
-/**
- * One row of `GET /api/boards/{board_key}/tickets/{nn}/activity` (the hub's
- * `ticket_moved` log, oldest first). ASSUMPTION: a bare array, shape as TicketMoved.
- */
+/** One `ticket_moved` row of the activity endpoint (the hub's log). */
 export interface ActivityEvent {
   from: Column;
   to: Column;
   at: Timestamp;
+}
+
+/** `GET /api/boards/{board_key}/tickets/{nn}/activity` (`$defs/rest_activity`), oldest first. */
+export interface ActivityResponse {
+  board_key: string;
+  nn: string;
+  events: ActivityEvent[];
 }
