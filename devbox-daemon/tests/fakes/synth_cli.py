@@ -13,11 +13,13 @@ it gave, "" for /dev/null). The mode comes from $FAKE_SYNTH_MODE_<BIN> (bin uppe
   is_error the envelope with is_error: true
   status_error  agy's envelope with status "ERROR" (exit 0)
   agy_error  partial output, `AGY_ERROR:` on stderr, exit 3
+  slow     sleeps $FAKE_SYNTH_DELAY seconds (1), then prints the good envelope
   hang     sleeps $FAKE_SYNTH_HANG seconds (60), printing nothing
   linger   starts a helper (its own process group, same session) that keeps stdout
            and stderr open for 60 s, writes its pid to $FAKE_SYNTH_PIDFILE, then
            prints the good envelope and exits 0
-The payload: $FAKE_SYNTH_PAYLOAD (JSON), else a good one naming the bin."""
+The payload: $FAKE_SYNTH_PAYLOAD (JSON), else a good one naming the bin (a board
+brief's, when the prompt asks for the BOARD BRIEF)."""
 
 import json
 import os
@@ -45,6 +47,13 @@ mode = (
 payload = (
     json.loads(os.environ["FAKE_SYNTH_PAYLOAD"])
     if os.environ.get("FAKE_SYNTH_PAYLOAD")
+    else {
+        "landed": [f"Export landed ({name})"],
+        "in_flight": ["02 is in review"],
+        "needs_you": ["01 waits for you"],
+        "next": ["Launch 03"],
+    }
+    if any("BOARD BRIEF" in a for a in sys.argv[1:])
     else {
         "summary": f"Written by {name}.\nSecond line.",
         "reviewer_notes": "Check the edge case.",
@@ -95,6 +104,9 @@ elif mode == "linger":
     )
     Path(os.environ["FAKE_SYNTH_PIDFILE"]).write_text(str(helper.pid))
     print(envelope(json.dumps(payload)), flush=True)
+elif mode == "slow":
+    time.sleep(float(os.environ.get("FAKE_SYNTH_DELAY", "1")))
+    print(envelope(json.dumps(payload)))
 elif mode == "hang":
     time.sleep(float(os.environ.get("FAKE_SYNTH_HANG", "60")))
 else:

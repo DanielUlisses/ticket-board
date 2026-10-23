@@ -222,11 +222,31 @@ describe("store", () => {
       expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("#05") });
     });
 
-    it("a board-brief event (nn null) leaves the tickets alone", () => {
+    const briefOf = (store: ReturnType<typeof loaded>, key: string) =>
+      store.view().allBoards.find((b) => b.key === key)!.hub_meta.board_brief;
+
+    it("a board-brief event (nn null) updates the board's brief, never its tickets", () => {
       const store = loaded();
-      const before = store.view().allBoards;
-      store.apply(fixture("synthesis-finished-board-brief"));
-      expect(store.view().allBoards).toBe(before);
+      const key = "dev-daniel/ticket-skill/tk-hub";
+      const tickets = store.view().allBoards.find((b) => b.key === key)!.tickets;
+      const lines = briefOf(store, key)!.landed;
+      store.apply({ ...fixture<SynthesisEvent>("synthesis-finished-board-brief"), type: "synthesis_started" });
+      expect(briefOf(store, key)).toMatchObject({ synthesis_status: "running", landed: lines });
+      store.apply({ ...fixture<SynthesisEvent>("synthesis-finished-board-brief"), backend: "cursor" });
+      expect(briefOf(store, key)).toMatchObject({ synthesis_status: "ok", synthesis_backend: "cursor", synthesis_error: null });
+      expect(store.view().allBoards.find((b) => b.key === key)!.tickets).toBe(tickets);
+    });
+
+    it("a failed board brief keeps its lines, records the error and raises a toast; a board with no brief gets an empty failed one", () => {
+      const store = loaded();
+      const failed = { ...fixture<SynthesisEvent>("synthesis-finished-board-brief"), type: "synthesis_failed" as const, error: "agy: timed out after 300s" };
+      store.apply(failed);
+      const lines = briefOf(store, failed.board_key)!;
+      expect(lines).toMatchObject({ synthesis_status: "failed", synthesis_error: "agy: timed out after 300s" });
+      expect(lines.landed.length).toBeGreaterThan(0);
+      expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("Board brief") });
+      store.apply({ ...failed, board_key: "dev-daniel/devboxes/tk-hub" });
+      expect(briefOf(store, "dev-daniel/devboxes/tk-hub")).toMatchObject({ landed: [], synthesis_status: "failed" });
     });
   });
 
