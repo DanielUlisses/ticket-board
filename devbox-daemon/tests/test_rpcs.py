@@ -4,6 +4,7 @@ process, over fake tk.sh / herdr on PATH."""
 import asyncio
 import fcntl
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -743,3 +744,173 @@ def test_a_clean_merge_is_flagged_merged(box, cert):
 
     assert result["ok"] is True
     assert result["data"]["merged"] is True
+
+
+def sync_logs(box):
+    return sorted((box.home / ".local/state/tk-daemon").glob("sync-*.log"))
+
+
+@pytest.mark.parametrize("col", ["working", "review"])
+def test_sync_box_is_refused_while_a_ticket_is_working_or_in_review_unless_forced(
+    box, cert, col
+):
+    box.board("alpha", "b", [row("01", col)])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            await hub.next("snapshot")
+            refused = await call(hub, "sync_box", {"force": False}, "r-1")
+            before = sync_logs(box)
+            forced = await call(hub, "sync_box", {"force": True}, "r-2")
+            return refused, before, forced
+
+    refused, before, forced = run(scenario())
+
+    assert (refused["ok"], refused["exit_code"]) == (False, None)
+    assert "working or in review" in refused["reason"] and before == []
+    assert forced["ok"] is True and len(sync_logs(box)) == 1
+
+
+def test_sync_box_runs_devbox_sync_detached_via_systemd_run_logging_to_state(box, cert):
+    box.board("alpha", "b", [row("01", "backlog")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            await hub.next("snapshot")
+            return await call(hub, "sync_box", {"force": False})
+
+    result = run(scenario())
+
+    assert result["ok"] is True
+    (argv,) = [
+        json.loads(x) for x in (box.tmp / "systemd.log").read_text().splitlines()
+    ]
+    (log,) = sync_logs(box)
+    assert argv[:2] == ["--user", "--collect"]
+    assert any("devbox sync" in a for a in argv) and str(log) in argv
+    assert log.read_text() == "devbox sync: done\n"
+    assert log.name.startswith("sync-") and str(log) in result["output_tail"]
+
+
+def test_the_last_sync_result_and_version_are_reported_after_the_daemon_restarts(
+    box, cert
+):
+    box.board("alpha", "b", [row("01", "backlog")])
+    box.env["FAKE_DEVBOX_EXIT"] = "3"
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            await hub.next("snapshot")
+            await call(hub, "sync_box", {"force": False})
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            return await hub.next("hello")
+
+    health = run(scenario())["health"]
+
+    last = health["last_sync"]
+    assert (last["exit_code"], last["log_tail"]) == (3, "devbox sync: done\n")
+    assert last["log_path"] == str(sync_logs(box)[0])
+    assert health["daemon_version"] == "0.1.0"
+
+
+def stale_log(box, stamp, exit_code=None, text="partial\n"):
+    d = box.home / ".local/state/tk-daemon"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"sync-{stamp}.log").write_text(text)
+    if exit_code is not None:
+        (d / f"sync-{stamp}.exit").write_text(f"{exit_code}\n")
+
+
+def hello_health(box, cert):
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            return await hub.next("hello")
+
+    return run(scenario())["health"]
+
+
+def test_a_sync_with_no_exit_file_and_no_active_unit_is_reported_interrupted(box, cert):
+    stale_log(box, "20261023T120005123Z")
+
+    last = hello_health(box, cert)["last_sync"]
+
+    assert (last["exit_code"], last["interrupted"]) == (None, True)
+    assert last["started_at"] == "2026-10-23T12:00:05Z"
+    assert last["log_tail"] == "partial\n"
+
+
+def test_a_sync_whose_unit_is_still_active_is_running_not_interrupted(box, cert):
+    stale_log(box, "20261023T120005123Z")
+    box.env["FAKE_SYSTEMCTL_ACTIVE"] = "tk-sync-20261023T120005123Z"
+
+    last = hello_health(box, cert)["last_sync"]
+
+    assert (last["exit_code"], last["interrupted"]) == (None, False)
+
+
+def test_sync_box_is_refused_even_forced_while_a_sync_is_running(box, cert):
+    box.board("alpha", "b", [row("01", "backlog")])
+    stale_log(box, "20261023T120005123Z")
+    box.env["FAKE_SYSTEMCTL_ACTIVE"] = "tk-sync-20261023T120005123Z"
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            await hub.next("snapshot")
+            return await call(hub, "sync_box", {"force": True})
+
+    refused = run(scenario())
+
+    assert refused["ok"] is False and "already running" in refused["reason"]
+    assert len(sync_logs(box)) == 1
+
+
+def test_logs_not_named_by_the_daemon_are_ignored(box, cert):
+    stale_log(box, "20261023T120005Z", exit_code=0, text="the real one\n")
+    stale_log(box, "zzz", text="stray\n")
+    stale_log(box, "2026-10-23", text="stray too\n")
+
+    last = hello_health(box, cert)["last_sync"]
+
+    assert last is not None and last["log_tail"] == "the real one\n"
+    assert last["started_at"] == "2026-10-23T12:00:05Z"
+
+
+def test_back_to_back_syncs_get_distinct_logs_and_neither_is_overwritten(box, cert):
+    box.board("alpha", "b", [row("01", "backlog")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            await hub.next("snapshot")
+            await call(hub, "sync_box", {"force": False}, "r-1")
+            await call(hub, "sync_box", {"force": False}, "r-2")
+
+    run(scenario())
+
+    logs = sync_logs(box)
+    assert len(logs) == 2
+    assert all(p.with_suffix(".exit").exists() for p in logs)
+    assert all(re.fullmatch(r"sync-\d{8}T\d{6}\d{3}Z\.log", p.name) for p in logs)
+
+
+def test_a_systemd_run_failure_is_refused_with_its_stderr_and_leaves_no_log(box, cert):
+    box.board("alpha", "b", [row("01", "backlog")])
+    box.env["FAKE_SYSTEMD_FAIL"] = "Failed to connect to user bus"
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert):
+            await hub.next("snapshot")
+            return await call(hub, "sync_box", {"force": False})
+
+    refused = run(scenario())
+
+    assert refused["ok"] is False
+    assert "Failed to connect to user bus" in refused["reason"]
+    assert sync_logs(box) == []
+
+
+def test_the_reported_version_follows_the_installed_version_file(box, cert):
+    assert hello_health(box, cert)["daemon_version"] == "0.1.0"
+
+    box.write(".local/share/tk-hub/VERSION", "abc1234\n")
+
+    assert hello_health(box, cert)["daemon_version"] == "abc1234"

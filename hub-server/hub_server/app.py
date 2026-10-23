@@ -167,6 +167,10 @@ class ArchiveRequest(BaseModel):
     archived: bool
 
 
+class SyncRequest(BaseModel):
+    force: bool = False
+
+
 class ScanRequest(BaseModel):
     devbox: str | None = None
 
@@ -524,6 +528,17 @@ def create_app(
                 {"board_key": board_key, "archived": request.archived},
                 board_key=board_key,
             )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {devbox} is offline") from None
+        return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}
+
+    @app.post("/api/devboxes/{devbox}/sync", status_code=202)
+    async def sync_devbox(devbox: str, request: SyncRequest):
+        """sync_box on the devbox (online only). The daemon refuses while a ticket
+        is working unless force, and answers at once; the outcome comes back as
+        health.last_sync after it reconnects."""
+        try:
+            rpc_id = await hub.send_rpc(devbox, "sync_box", {"force": request.force})
         except DevboxOffline:
             raise HTTPException(409, f"devbox {devbox} is offline") from None
         return {"rpcs": [{"id": rpc_id, "devbox": devbox}]}

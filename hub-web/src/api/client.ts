@@ -295,6 +295,20 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
         store.toast({ kind: "error", text: `${verb} failed: ${(err as Error).message}` });
       }
     },
+    /** ⟳ Sync box: the hub asks the box's daemon to start `devbox sync`; a refusal (tickets working or in review, a sync already running, systemd-run failing: its stderr) comes back as its rpc_result, which the store toasts. */
+    async syncBox(devbox: string, force: boolean) {
+      try {
+        const res = await doFetch(`${origin}/api/devboxes/${encodeURIComponent(devbox)}/sync`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ force }),
+        });
+        if (res.ok) store.toast({ kind: "ok", text: `⟳ Sync sent to ${devbox}` });
+        else store.toast({ kind: "error", text: `⟳ Sync failed: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `⟳ Sync failed: ${(err as Error).message}` });
+      }
+    },
   };
 }
 

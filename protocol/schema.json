@@ -96,7 +96,8 @@
       "properties": {
         "started_at": { "$ref": "#/$defs/timestamp" },
         "finished_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
-        "exit_code": { "type": ["integer", "null"] },
+        "exit_code": { "type": ["integer", "null"], "description": "null while it runs or when it was interrupted." },
+        "interrupted": { "type": "boolean", "description": "No exit code and its systemd unit is gone: killed or rebooted mid-sync." },
         "log_path": { "type": "string" },
         "log_tail": { "type": "string" }
       }
@@ -828,6 +829,10 @@
     },
     "rest_archive": {
       "description": "REST: POST /api/boards/{key}/archive, body {archived: boolean} -> 202, one set_archived rpc to the board's devbox; its rpc_result arrives on /ws/ui. 404 unknown board, 409 devbox offline, 422 bad body (see rest_error).",
+      "$ref": "#/$defs/rest_scan"
+    },
+    "rest_sync_box": {
+      "description": "REST: POST /api/devboxes/{devbox}/sync, body {force?: boolean} -> 202, one sync_box rpc to the devbox; the outcome arrives as health.last_sync after the daemon reconnects. 409 devbox offline, 422 bad body (see rest_error).",
       "$ref": "#/$defs/rest_scan"
     },
     "rest_propose_memory": {

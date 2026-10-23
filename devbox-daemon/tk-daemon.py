@@ -336,6 +336,69 @@ async def board_lock(board_path: str, wait: float) -> typing.IO:
         raise
 
 
+def sync_dir() -> Path:
+    return Path.home() / ".local" / "state" / "tk-daemon"
+
+
+def daemon_version() -> str:
+    """What the install last put on this box: `install.sh daemon` writes the
+    revision it installed to ~/.local/share/tk-hub/VERSION, so it changes when a
+    sync installs a new daemon. DAEMON_VERSION when there is none."""
+    try:
+        text = (Path.home() / ".local" / "share" / "tk-hub" / "VERSION").read_text()
+    except OSError:
+        return DAEMON_VERSION
+    return text.strip() or DAEMON_VERSION
+
+
+SYNC_LOG = re.compile(r"sync-(\d{8})T(\d{6})(\d{3})?Z\.log")
+
+
+def sync_logs() -> list[tuple[str, Path]]:
+    """(stamp, log) of the logs this daemon named, oldest first; others are ignored."""
+    found = []
+    for path in sync_dir().glob("sync-*.log"):
+        if m := SYNC_LOG.fullmatch(path.name):
+            found.append((m.group(1) + m.group(2) + (m.group(3) or "000"), path))
+    found.sort()
+    return [(path.stem.removeprefix("sync-"), path) for _, path in found]
+
+
+async def sync_unit_active(stamp: str) -> bool:
+    rc, out, _ = await run_cmd(["systemctl", "--user", "is-active", f"tk-sync-{stamp}"])
+    return rc == 0 and out.strip() in ("active", "activating")
+
+
+async def last_sync(starting: set[str] = frozenset()) -> dict | None:
+    """The newest sync-<stamp>.log under the state dir with its .exit file. No
+    .exit file: the sync is still running (unit active, or just being started) or
+    was interrupted (unit gone: killed, rebooted)."""
+    logs = sync_logs()
+    if not logs:
+        return None
+    stamp, log_path = logs[-1]
+    started = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}T{stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}Z"
+    code_path = log_path.with_suffix(".exit")
+    interrupted = False
+    try:
+        exit_code = int(code_path.read_text().strip())
+        finished = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(code_path.stat().st_mtime)
+        )
+    except (OSError, ValueError):
+        exit_code, finished = None, None
+        interrupted = stamp not in starting and not await sync_unit_active(stamp)
+    try:
+        tail = "".join(
+            log_path.read_text(errors="replace").splitlines(keepends=True)[-20:]
+        )
+    except OSError:
+        tail = ""
+    return {"started_at": started, "finished_at": finished, "exit_code": exit_code,
+            "interrupted": interrupted, "log_path": str(log_path),
+            "log_tail": tail}  # fmt: skip
+
+
 async def run_cmd(
     argv: list[str], env: dict | None = None, cwd: str | None = None
 ) -> tuple[int, str, str]:
@@ -446,6 +509,8 @@ class Daemon:
         self.token: str | None = None
         self.sent: dict[str, dict] = {}  # board key -> the board last sent
         self.health: dict | None = None
+        # stamps of syncs whose systemd-run is still starting
+        self.sync_starting: set[str] = set()
         self.need_full = True  # the next snapshot must be full (a new connection)
         self.export_start = 0  # where the next export starts (tk-export: resume)
         self.schema = Schema(json.loads(Path(cfg.get("schema", SCHEMA)).read_text()))
@@ -479,6 +544,7 @@ class Daemon:
             "resolve_nocode": functools.partial(self.rpc_ship, "resolve_nocode"),
             "resolve_ticket": functools.partial(self.rpc_ship, "resolve_ticket"),
             "verify_landed": self.rpc_verify_landed,
+            "sync_box": self.rpc_sync_box,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -486,7 +552,7 @@ class Daemon:
         env = {
             **os.environ,
             "TK_DEVBOX": self.cfg["devbox"],
-            "TK_DAEMON_VERSION": DAEMON_VERSION,
+            "TK_DAEMON_VERSION": daemon_version(),
             "TK_EXPORT_CALL_TIMEOUT": f"{self.cfg['export_call_timeout_s']:g}",
             "TK_EXPORT_START": str(self.export_start),
         }
@@ -518,6 +584,9 @@ class Daemon:
         for key, path in FAILED.findall(err):
             failed.add(sent_dirs.get(os.path.realpath(path), key) if path else key)
         snap = json.loads(out)
+        if isinstance(snap.get("health"), dict):
+            snap["health"]["last_sync"] = await last_sync(self.sync_starting)
+            snap["health"]["daemon_version"] = daemon_version()
         if errors := self.schema.errors(snap.get("health"), "health"):
             log.error("export: health fails the schema (%s)", "; ".join(errors[:3]))
             snap["health"] = self.fallback_health("health failed the schema")
@@ -960,6 +1029,57 @@ class Daemon:
             "output_tail": f"{key} archived={str(flag).lower()}",
         }
 
+    async def rpc_sync_box(self, ws, params: dict) -> dict:
+        """`devbox sync`, started detached under `systemd-run --user` so it
+        outlives this daemon (a sync reinstalls it); refused while a sync already
+        runs, and while a ticket is working or in review unless `force`. Returns at
+        once: last_sync reports the outcome."""
+        last = await last_sync(self.sync_starting)
+        if last and last["exit_code"] is None and not last["interrupted"]:
+            raise RpcRefused(f"a sync is already running (log {last['log_path']})")
+        busy = sum(
+            1
+            for b in self.sent.values()
+            for t in b.get("tickets") or []
+            if t.get("col") in RUNNING
+        )
+        if busy and not params.get("force"):
+            raise RpcRefused(
+                f"{busy} ticket(s) working or in review on this box: sync anyway to force it"
+            )
+        sync_dir().mkdir(parents=True, exist_ok=True)
+        ms = int(time.time() * 1000)
+        while True:  # never reuse a stamp: the log is created exclusively
+            stamp = (
+                time.strftime("%Y%m%dT%H%M%S", time.gmtime(ms / 1000))
+                + f"{ms % 1000:03d}Z"
+            )
+            log_path = sync_dir() / f"sync-{stamp}.log"
+            try:
+                log_path.open("x").close()
+                break
+            except FileExistsError:
+                ms += 1
+        code_path = log_path.with_suffix(".exit")
+        code_path.unlink(missing_ok=True)
+        script = 'devbox sync >"$0" 2>&1; echo $? >"$1"'
+        self.sync_starting.add(stamp)
+        try:
+            rc, out, err = await run_cmd(
+                ["systemd-run", "--user", "--collect", f"--unit=tk-sync-{stamp}",
+                 "sh", "-c", script, str(log_path), str(code_path)]
+            )  # fmt: skip
+        finally:
+            self.sync_starting.discard(stamp)
+        if rc != 0:
+            log_path.unlink(missing_ok=True)
+            raise RpcRefused(f"systemd-run failed: {(err or out).strip()[-300:]}")
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"devbox sync started, log {log_path}",
+        }
+
     async def rpc_set_policy(self, ws, params: dict) -> dict:
         """`tk.sh policy-set <board> key=value…` in the repo's main checkout; the
         re-export after every RPC then carries the new resolved policy."""
@@ -1379,7 +1499,7 @@ class Daemon:
         if self.health is not None:
             return self.health
         return {
-            "daemon_version": DAEMON_VERSION,
+            "daemon_version": daemon_version(),
             "herdr": {"ok": False, "status": f"unknown: {why}"},
             "usage": {"state": "unknown", "five_hour": None, "seven_day": None,
                       "updated_at": None},
@@ -1518,7 +1638,7 @@ def main() -> int:
         return 1
     log.info(
         "tk-daemon %s for %s, hub %s via %s",
-        DAEMON_VERSION,
+        daemon_version(),
         cfg["devbox"],
         daemon.name,
         cfg["ip"],

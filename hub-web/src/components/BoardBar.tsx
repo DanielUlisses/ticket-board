@@ -5,6 +5,7 @@ import styles from "./BoardBar.module.css";
 import { DevboxPill } from "./DevboxPill";
 import { Spinner } from "./Spinner";
 import { useView } from "./StoreContext";
+import { SyncBox, type OnSync } from "./SyncBox";
 import { PolicyPopover, type PolicyApi } from "./PolicyPopover";
 
 /** Starts a board's ▶ Frontier; the button is busy until the returned promise settles. */
@@ -43,11 +44,12 @@ function FrontierButton({ boardKey, onFrontier }: { boardKey: string; onFrontier
  * A board's bar: id pill, title (the repo), devbox, an autonomy · forge tag, staleness,
  * ▶ Frontier and, with an api, the policy settings popover.
  */
-export function BoardBar({ board, box, api, onFrontier }: {
+export function BoardBar({ board, box, api, onFrontier, onSync }: {
   board: Board;
   box: Devbox | undefined;
   api?: PolicyApi;
   onFrontier?: OnFrontier;
+  onSync?: OnSync;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -56,6 +58,7 @@ export function BoardBar({ board, box, api, onFrontier }: {
         <span className={styles.id}>{board.slug}</span>
         <h2 className={styles.title}>{board.repo}</h2>
         <DevboxPill name={board.devbox} box={box} />
+        {onSync && <SyncBox name={board.devbox} box={box} onSync={onSync} />}
         <span className={styles.sub} title="autonomy · forge">
           {board.policy.autonomy} · {board.policy.forge}
         </span>

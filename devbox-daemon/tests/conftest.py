@@ -55,6 +55,9 @@ class Box:
             ("tk_sh.py", "tk.sh"),
             ("herdr.py", "herdr"),
             ("op.py", "op"),
+            ("systemd_run.py", "systemd-run"),
+            ("devbox.py", "devbox"),
+            ("systemctl.py", "systemctl"),
             ("synth_cli.py", "agy"),
             ("synth_cli.py", "cursor-agent"),
             ("synth_cli.py", "claude"),
@@ -69,6 +72,7 @@ class Box:
             "TK_DEVBOX": "dev-test",
             "FAKE_TK_LOG": str(self.tk_log),
             "FAKE_SYNTH_LOG": str(self.synth_log),
+            "FAKE_SYSTEMD_LOG": str(tmp / "systemd.log"),
         }
         self.env.pop("TK_SCAN_GLOB", None)
         self.env.pop("XDG_STATE_HOME", None)
