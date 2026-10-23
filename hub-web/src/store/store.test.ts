@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Board, BoardSynced, DevboxStatus, TicketMoved } from "../protocol/types";
+import type { Board, DevboxStatus, TicketMoved } from "../protocol/types";
 import { boardsResponse, fixture } from "../test/fixtures";
-import { createStore, PENDING_EXPIRY_MS, ticketId } from "./store";
+import { createStore, isBoardShown, PENDING_EXPIRY_MS, presetOf, stagesFor, ticketId } from "./store";
 
 const loaded = () => {
   const store = createStore();
@@ -17,20 +17,36 @@ describe("store", () => {
   const nns = (store: ReturnType<typeof createStore>) =>
     store.view().boards.map((b) => [b.key, b.tickets.map((t) => t.nn)]);
 
+  it("by default every group but Done shows, and Done tickets stay out", () => {
+    const store = loaded();
+    expect(store.view().filter.stages).toEqual(["attention", "active", "frontier", "blocked"]);
+    expect(nns(store).flatMap(([, n]) => n)).not.toContain("04");
+    expect(store.view().counts.done).toBe(1);
+  });
+
+  it("stage selections combine: a ticket passes when its group is selected", () => {
+    const store = loaded();
+    store.setFilter({ stages: ["frontier", "done"] });
+    expect(nns(store)).toEqual([
+      ["dev-daniel/ticket-skill/tk-hub", ["04"]],
+      ["dev-daniel/ticket-board/tk-hub", ["27"]],
+    ]);
+  });
+
   it("a stage keeps only its tickets and drops boards left empty", () => {
     const store = loaded();
-    store.setFilter({ stage: "attention" });
+    store.setFilter({ stages: ["attention"] });
     expect(nns(store)).toEqual([
       ["dev-daniel/ticket-skill/tk-hub", ["01", "03"]],
       ["dev-daniel/devboxes/tk-hub", ["05"]],
     ]);
   });
 
-  it("counts follow the Board select but not the stage", () => {
+  it("counts follow the Board selection but not the stage", () => {
     const store = loaded();
-    store.setFilter({ board: "dev-daniel/ticket-board/tk-hub" });
+    store.setFilter({ boards: { "dev-daniel/ticket-skill/tk-hub": false, "dev-daniel/devboxes/tk-hub": false } });
     expect(store.view().counts).toEqual({ all: 7, attention: 0, active: 1, frontier: 1, blocked: 5, done: 0 });
-    store.setFilter({ stage: "blocked" });
+    store.setFilter({ stages: ["blocked"] });
     expect(store.view().counts.all).toBe(7);
     expect(nns(store)).toEqual([["dev-daniel/ticket-board/tk-hub", ["07", "08", "09", "10", "22"]]]);
   });
@@ -104,23 +120,38 @@ describe("store", () => {
       expect(store.view().counts.attention).toBe(2);
     });
 
-    it("removing or archiving the selected board resets the Board select", () => {
+    it("a board the user unticked stays unticked across board_synced; new boards follow the default", () => {
       const store = loaded();
-      store.setFilter({ board: "dev-daniel/devboxes/tk-hub" });
-      store.apply({ type: "board_removed", board_key: "dev-daniel/devboxes/tk-hub" });
-      expect(store.view().filter.board).toBeNull();
+      const hidden = "dev-daniel/devboxes/tk-hub";
+      store.setFilter({ boards: { [hidden]: false } });
+      const board = store.view().allBoards.find((b) => b.key === hidden)!;
+      store.apply({ type: "board_synced", board });
+      expect(store.view().boards.map((b) => b.key)).not.toContain(hidden);
+      expect(store.view().counts.attention).toBe(2);
+      const other = fixture<{ board: Board }>("board-synced-stale").board;
+      store.apply({ type: "board_synced", board: { ...other, key: "dev-acme/ticket-board/tk-hub", devbox: "dev-acme" } });
+      expect(store.view().boards.map((b) => b.key)).toContain("dev-acme/ticket-board/tk-hub");
+    });
 
-      const stale = fixture<BoardSynced>("board-synced-stale");
-      store.setFilter({ board: stale.board.key });
-      store.apply({ ...stale, board: { ...stale.board, hub_meta: { ...stale.board.hub_meta, archived: true } } });
-      expect(store.view().filter.board).toBeNull();
-      expect(store.view().boards.map((b) => b.key)).not.toContain(stale.board.key);
+    it("an archived board is unticked by default; ticking it shows it, with its counts, and it stays archived", () => {
+      const store = loaded();
+      const board = store.view().allBoards[0];
+      const archived = { ...board, hub_meta: { ...board.hub_meta, archived: true } };
+      store.apply({ type: "board_synced", board: archived });
+      expect(isBoardShown(store.view().filter, store.view().archivedBoards[0])).toBe(false);
+      const before = store.view().counts.all;
+      store.setFilter({ boards: { [board.key]: true } });
+      expect(store.view().boards.map((b) => b.key)).toContain(board.key);
+      expect(store.view().counts.all).toBe(before + board.tickets.length);
+      expect(store.view().archivedBoards.map((b) => b.key)).toEqual([board.key]);
+      store.apply({ type: "board_synced", board: archived });
+      expect(store.view().boards.map((b) => b.key)).toContain(board.key);
     });
 
     it("an archived board leaves the views and counts and is listed in archivedBoards", () => {
       const store = loaded();
       const before = store.view().counts.all;
-      const board = store.view().boards[0];
+      const board = store.view().allBoards[0];
       store.apply({ type: "board_synced", board: { ...board, hub_meta: { ...board.hub_meta, archived: true } } });
       const view = store.view();
       expect(view.archivedBoards.map((b) => b.key)).toEqual([board.key]);
@@ -185,17 +216,22 @@ describe("store", () => {
     let calls = 0;
     const off = store.subscribe(() => calls++);
     store.load(boardsResponse());
-    store.setFilter({ stage: "active" });
+    store.setFilter({ stages: ["active"] });
     off();
     store.apply(fixture("board-removed"));
     expect(calls).toBe(2);
   });
 
-  it("selecting a pill, then a stage, is one filter", () => {
+  it("pills are presets of the stage set; the pressed one is an exact match", () => {
     const store = loaded();
-    store.setFilter({ stage: "frontier" });
-    store.setFilter({ stage: "done" });
-    expect(nns(store)).toEqual([["dev-daniel/ticket-skill/tk-hub", ["04"]]]);
+    expect(presetOf(store.view().filter.stages)).toBeNull();
+    store.setFilter({ stages: stagesFor("all") });
+    expect(store.view().filter.stages).toHaveLength(5);
+    expect(presetOf(store.view().filter.stages)).toBe("all");
+    store.setFilter({ stages: stagesFor("frontier") });
+    expect(presetOf(store.view().filter.stages)).toBe("frontier");
+    store.setFilter({ stages: ["frontier", "active"] });
+    expect(presetOf(store.view().filter.stages)).toBeNull();
   });
 
   it("an opened ticket whose board is removed stays closed when the board returns", () => {

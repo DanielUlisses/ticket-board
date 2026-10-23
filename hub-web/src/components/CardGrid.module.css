@@ -33,3 +33,13 @@
   text-align: center;
   padding: 24px;
 }
+/* Archived board ticked into view: greyed like a stale one, with an "archived" label. */
+.board[data-archived="true"] {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+.archived {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}

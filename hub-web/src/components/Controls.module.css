@@ -9,7 +9,7 @@
 }
 @media (min-width: 768px) {
   .bar {
-    grid-template-columns: 200px 220px 190px 1fr;
+    grid-template-columns: 200px 200px 200px 1fr;
     align-items: center;
   }
 }
@@ -30,6 +30,7 @@
 }
 .pills {
   grid-column: 1 / -1;
+  min-width: 0;
   display: flex;
   gap: 6px;
   overflow-x: auto;
@@ -74,17 +75,120 @@
 .dot[data-dot="urgent"] { background: var(--icon-urgent); }
 .dot[data-dot="working"] { background: var(--icon-working); }
 
-.boardCell {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.dropdown {
+  min-width: 0;
 }
-.archived {
+@media (max-width: 767px) {
+  /* The panel spans the bar, so a dropdown in the right-hand column cannot overflow the screen. */
+  .bar {
+    position: relative;
+  }
+  .panel {
+    left: 14px;
+    right: 14px;
+    width: auto;
+    max-width: none;
+  }
+}
+@media (min-width: 768px) {
+  .dropdown {
+    position: relative;
+  }
+}
+.trigger {
+  display: block;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  width: max(100%, 280px);
+  max-width: calc(100vw - 28px);
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   font-size: 12px;
   color: var(--text-primary);
 }
-.archived label {
+.shortcuts {
   display: flex;
-  gap: 6px;
+  gap: 10px;
+  padding: 4px 8px 6px;
+}
+.link {
+  background: none;
+  border: 0;
   padding: 2px 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.heading {
+  padding: 8px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px;
+  border-radius: 8px;
+}
+.row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  min-height: 36px; /* a phone-sized touch target */
+  padding: 0 4px;
+  cursor: pointer;
+}
+.row[data-archived="true"] .rowName {
+  color: var(--text-secondary);
+}
+.rowName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.box,
+.tag {
+  color: var(--text-secondary);
+}
+.tag {
+  font-style: italic;
+}
+.action {
+  flex: none;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

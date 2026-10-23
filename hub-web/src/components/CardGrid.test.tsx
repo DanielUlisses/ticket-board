@@ -1,7 +1,7 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoardSynced, Devbox, UiEvent, Usage } from "../protocol/types";
-import { createStore } from "../store/store";
+import { createStore, stagesFor } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { CardGrid } from "./CardGrid";
 import { StoreProvider } from "./StoreContext";
@@ -46,7 +46,7 @@ describe("CardGrid", () => {
   });
 
   it("each column has its glyph and variant", () => {
-    renderGrid();
+    renderGrid((store) => store.setFilter({ stages: stagesFor("all") }));
     const glyphOf = (nn: string) =>
       screen.getByRole("button", { name: new RegExp(`^${nn} `) }).querySelector("[data-variant]")!;
     expect([glyphOf("05"), glyphOf("02"), glyphOf("03"), glyphOf("06"), glyphOf("27"), glyphOf("04")].map(
@@ -135,7 +135,7 @@ describe("CardGrid", () => {
   });
 
   it("follows the store's filters", () => {
-    renderGrid((store) => store.setFilter({ stage: "frontier" }));
+    renderGrid((store) => store.setFilter({ stages: ["frontier"] }));
     expect(screen.getAllByRole("button").filter((e) => e.tagName === "ARTICLE").map((a) => a.getAttribute("aria-label"))).toEqual(["27 Hub settings page"]);
   });
 

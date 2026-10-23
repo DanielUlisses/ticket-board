@@ -49,6 +49,7 @@ export function LiveBoard() {
                 key={board.key}
                 className={styles.lane}
                 data-stale={board.stale ? "true" : "false"}
+                data-archived={board.hub_meta.archived ? "true" : "false"}
                 aria-label={`${board.slug} ${board.repo} on ${board.devbox}`}
               >
                 <th scope="row" className={styles.boardCell}>
@@ -57,6 +58,7 @@ export function LiveBoard() {
                     <strong className={styles.boardTitle}>{board.repo}</strong>
                     <DevboxPill name={board.devbox} box={devboxes.find((d) => d.devbox === board.devbox)} plain />
                     <span className={styles.forge}>{board.forge}</span>
+                    {board.hub_meta.archived && <span className={styles.forge}>archived</span>}
                     {board.stale && board.last_seen && (
                       <span className={styles.forge}>last seen {formatSeen(board.last_seen)}</span>
                     )}

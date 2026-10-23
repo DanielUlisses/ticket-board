@@ -15,8 +15,10 @@ export function CardGrid({ client, onFrontier }: { client?: PolicyApi; onFrontie
           key={board.key}
           className={styles.board}
           data-stale={board.stale ? "true" : "false"}
+          data-archived={board.hub_meta.archived ? "true" : "false"}
           aria-label={`${board.slug} ${board.repo} on ${board.devbox}`}
         >
+          {board.hub_meta.archived && <span className={styles.archived}>archived</span>}
           <BoardBar
             board={board}
             box={devboxes.find((d) => d.devbox === board.devbox)}

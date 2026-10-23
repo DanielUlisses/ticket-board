@@ -83,10 +83,10 @@ describe("LiveBoard", () => {
     const store = renderBoard();
     act(() => {
       store.apply(fixture("board-synced-stale"));
-      store.setFilter({ stage: "attention" });
+      store.setFilter({ stages: ["attention"] });
     });
     expect(screen.getAllByRole("row")).toHaveLength(3); // header + two lanes
-    act(() => store.setFilter({ stage: "all" }));
+    act(() => store.setFilter({ stages: ["attention", "active", "frontier", "blocked", "done"] }));
     expect(lane("ticket-board")).toHaveAttribute("data-stale", "true");
   });
 });

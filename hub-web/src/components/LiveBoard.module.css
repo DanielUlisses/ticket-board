@@ -167,3 +167,8 @@
   font-size: 9.5px;
   color: var(--text-muted);
 }
+/* Archived board ticked into view: greyed like a stale lane. */
+.lane[data-archived="true"] {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
