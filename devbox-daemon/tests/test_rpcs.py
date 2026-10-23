@@ -445,3 +445,301 @@ def test_an_rpc_whose_params_fail_the_schema_is_refused_without_running_anything
     assert (result["ok"], result["exit_code"]) == (False, None)
     assert result["reason"].startswith("invalid params")
     assert new_calls == 0
+
+
+def ship(nn="05", **extra):
+    return {"board_key": KEY, "nn": nn, **extra}
+
+
+@pytest.mark.parametrize(
+    ("method", "col", "params", "argv"),
+    [
+        ("open_pr", "human", {}, ["pr", "{b}", "05"]),
+        ("ssh_push", "human", {}, ["push", "{b}", "05"]),
+        ("merge_pr", "pr", {}, ["merge", "{b}", "05"]),
+        ("resolve_nocode", "human", {"reason": "notes only"},
+         ["resolve", "{b}", "05", "--no-code", "notes only"]),
+        ("resolve_ticket", "done", {}, ["resolve", "{b}", "05"]),
+    ],
+)  # fmt: skip
+def test_each_ship_verb_runs_its_tk_sh_call_from_the_main_checkout(
+    box, cert, method, col, params, argv
+):
+    board = box.board("alpha", "b", [row("05", col, landed="yes:ancestry")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, method, ship(**params))
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (True, 0)
+    [c] = calls(box, argv[0])
+    assert c["argv"] == [a.replace("{b}", str(board)) for a in argv]
+    assert c["cwd"] == str(box.work / "alpha")
+
+
+@pytest.mark.parametrize(
+    ("method", "col"),
+    [("open_pr", "pr"), ("ssh_push", "working"), ("merge_pr", "human")],
+)
+def test_a_ship_verb_re_checks_the_column_right_before(box, cert, method, col):
+    box.board("alpha", "b", [row("05", "human" if col != "human" else "pr")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            box.board("alpha", "b", [row("05", col)])  # another driver moved it
+            return await call(hub, method, ship())
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, None)
+    assert f"ticket 05 is {col}, not" in result["reason"]
+    assert not [c for c in box.tk_calls() if c["argv"][0] in ("pr", "push", "merge")]
+
+
+def test_a_ship_verb_waits_for_the_boards_flock(box, cert):
+    board = box.board("alpha", "b", [row("05", "human")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            with open(board / ".board.lock", "w") as held:  # noqa: ASYNC230
+                fcntl.flock(held, fcntl.LOCK_EX)
+                await hub.send({"type": "rpc", "id": "r-1",
+                                "method": "ssh_push", "params": ship()})  # fmt: skip
+                await asyncio.sleep(0.8)
+                waited = calls(box, "push") == []
+            return waited, await hub.next("rpc_result")
+
+    waited, result = run(scenario())
+
+    assert waited
+    assert result["ok"] is True
+
+
+def test_merge_gate_failures_come_back_by_exit_code_with_each_gate(box, cert):
+    board = box.board("alpha", "b", [row("05", "pr")])
+    (board / "merge-exit").write_text("12")
+    (board / "merge-out").write_text(
+        "GATE pr PASS #7\nGATE ready PASS\nGATE mergeable PASS\n"
+        "GATE checks FAIL failed: build\nGATE review PASS\nNOT MERGED — a gate failed\n"
+    )
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, "merge_pr", ship())
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, 12)
+    assert result["reason"].startswith("gate failed")
+    assert result["data"]["gates"] == [
+        {"gate": "pr", "status": "pass", "detail": "#7"},
+        {"gate": "ready", "status": "pass", "detail": ""},
+        {"gate": "mergeable", "status": "pass", "detail": ""},
+        {"gate": "checks", "status": "fail", "detail": "failed: build"},
+        {"gate": "review", "status": "pass", "detail": ""},
+    ]
+
+
+def test_verify_landed_returns_the_verdict_and_the_open_pr(box, cert):
+    board = box.board("alpha", "b", [row("05", "pr")])
+    (board / "why-out").write_text(
+        "ticket 05: in-progress, forge github\nLANDED no\n"
+        'OPEN PR {"number":7,"checks":["build=ok"]}\n'
+    )
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, "verify_landed", ship())
+
+    result = run(scenario())
+
+    assert result["ok"] is True
+    assert result["data"] == {
+        "landed": "no",
+        "open_pr": '{"number":7,"checks":["build=ok"]}',
+    }
+    assert calls(box, "why")[0]["argv"][2] == "05"
+
+
+def test_resolve_without_a_reason_is_refused_and_runs_nothing(box, cert):
+    box.board("alpha", "b", [row("05", "done")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            blank = await call(hub, "resolve_nocode", ship(reason="   "), "r-1")
+            empty = await call(hub, "resolve_nocode", ship(reason=""), "r-2")
+            return blank, empty
+
+    blank, empty = run(scenario())
+
+    assert blank["ok"] is False
+    assert "needs a reason" in blank["reason"]
+    assert empty["ok"] is False
+    assert calls(box, "resolve") == []
+
+
+def test_plain_resolve_of_a_landed_ticket_succeeds_where_no_code_is_refused(box, cert):
+    board = box.board("alpha", "b", [row("05", "done", landed="yes:ancestry")])
+    (board / "landed").write_text("")  # tk.sh refuses resolve --no-code on it
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            plain = await call(hub, "resolve_ticket", ship(), "r-1")
+            # resolve_nocode is not even offered for done: the col re-check refuses it.
+            nocode = await call(hub, "resolve_nocode", ship(reason="x"), "r-2")
+            box.board("alpha", "b", [row("05", "human")])
+            refused = await call(hub, "resolve_nocode", ship(reason="x"), "r-3")
+            return plain, nocode, refused
+
+    plain, nocode, refused = run(scenario())
+
+    assert (plain["ok"], plain["exit_code"]) == (True, 0)
+    assert nocode["ok"] is False and "ticket 05 is done, not" in nocode["reason"]
+    assert (refused["ok"], refused["exit_code"]) == (False, 1)
+    assert "use plain resolve" in refused["output_tail"]
+    assert next(c["argv"] for c in calls(box, "resolve")) == [
+        "resolve",
+        str(board),
+        "05",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "col", "params"),
+    [("resolve_nocode", "working", {"reason": "x"}), ("resolve_nocode", "backlog", {"reason": "x"}),
+     ("resolve_ticket", "pr", {}), ("verify_landed", "human", {})],
+)  # fmt: skip
+def test_resolve_and_verify_re_check_the_column_right_before(
+    box, cert, method, col, params
+):
+    box.board("alpha", "b", [row("05", "pr" if col != "pr" else "done")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            box.board("alpha", "b", [row("05", col)])
+            return await call(hub, method, ship(**params))
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, None)
+    assert f"ticket 05 is {col}, not" in result["reason"]
+    assert not [c for c in box.tk_calls() if c["argv"][0] in ("resolve", "why")]
+
+
+def test_resolve_of_an_already_resolved_ticket_is_refused_before_tk_sh_runs(box, cert):
+    box.board("alpha", "b", [row("05", "done", landed="-")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, "resolve_ticket", ship())
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, None)
+    assert "ticket 05 is not landed" in result["reason"]
+    assert calls(box, "resolve") == []
+
+
+def test_a_stop_while_ship_verbs_wait_never_runs_them(box, cert):
+    board = box.board("alpha", "b", [row("05", "human")])
+
+    async def scenario():
+        async with (
+            FakeHub(cert) as hub,
+            daemon(box, hub, cert, export_interval_s=600, launch_lock_wait_s=5) as proc,
+        ):
+            await hub.next("snapshot")
+            with open(board / ".board.lock", "w") as held:  # noqa: ASYNC230
+                fcntl.flock(held, fcntl.LOCK_EX)
+                for rid in (
+                    "r-1",
+                    "r-2",
+                ):  # the first waits on the flock, the second on the queue
+                    await hub.send({"type": "rpc", "id": rid,
+                                    "method": "ssh_push", "params": ship()})  # fmt: skip
+                await asyncio.sleep(0.5)
+                proc.terminate()
+                await asyncio.sleep(0.5)
+            await asyncio.wait_for(proc.wait(), 10)
+
+    run(scenario())
+
+    assert calls(box, "push") == []
+    assert box.daemon_log.read_text().count("daemon stopping") >= 2
+
+
+def test_exit_5_on_a_pr_reaches_the_reason(box, cert):
+    board = box.board("alpha", "b", [row("05", "human")])
+    (board / "pr-exit").write_text("5")
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, "open_pr", ship())
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, 5)
+    assert "claude runner" in result["reason"]
+
+
+@pytest.mark.parametrize("code", [10, 11])
+def test_merge_exits_10_and_11_come_back_with_their_reason(box, cert, code):
+    board = box.board("alpha", "b", [row("05", "pr")])
+    (board / "merge-exit").write_text(str(code))
+    (board / "merge-out").write_text("GATE pr PASS #7\nNOT MERGED\n")
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, "merge_pr", ship())
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, code)
+    assert result["reason"] and result["data"]["merged"] is False
+
+
+def test_a_merge_that_went_through_but_whose_resolve_failed_says_so(box, cert):
+    board = box.board("alpha", "b", [row("05", "pr")])
+    (board / "merge-exit").write_text("1")
+    (board / "merge-out").write_text(
+        "GATE pr PASS #7\nMERGED 05 #7 (squash)\nERROR: resolve failed: boom\n"
+    )
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, "merge_pr", ship())
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, 1)
+    assert result["data"]["merged"] is True
+    assert result["reason"] == "merged, but resolve failed: ERROR: resolve failed: boom"
+
+
+def test_a_clean_merge_is_flagged_merged(box, cert):
+    board = box.board("alpha", "b", [row("05", "pr")])
+    (board / "merge-out").write_text("GATE pr PASS #7\nMERGED 05 #7 (squash)\n")
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, "merge_pr", ship())
+
+    result = run(scenario())
+
+    assert result["ok"] is True
+    assert result["data"]["merged"] is True

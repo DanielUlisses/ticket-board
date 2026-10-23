@@ -1,24 +1,26 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { HubClient } from "../api/client";
 import { COLUMN_META } from "../columns";
 import type { ActivityEvent, Board, Column, Ticket } from "../protocol/types";
 import { Glyph } from "./Glyph";
 import { LaunchControl } from "./LaunchControl";
+import { Markdown } from "./Markdown";
 import { PaneTail } from "./PaneTail";
 import { Relay } from "./Relay";
 import { ReportModal } from "./ReportModal";
+import { ShipActions } from "./ShipActions";
 import { useStore, useView } from "./StoreContext";
 import styles from "./TicketSheet.module.css";
 
 export { PANE_MS } from "./PaneTail";
 
 /** The hub calls the sheet makes. */
-export type DetailApi = Pick<HubClient, "activity" | "report" | "launch" | "say" | "paneTail" | "proposeMemory">;
+export type DetailApi = Pick<HubClient, "activity" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone" | "ship" | "resolveNoCode">;
 
 /** Columns where the ticket has an agent: relay to it, tail its pane. */
 const WITH_AGENT: ReadonlySet<Column> = new Set(["needs", "working", "review", "human"]);
 
-/** The footer's actions by column: ▶ Launch on backlog, the relay (↵ Send, primary on needs) where there is an agent. */
+/** The footer's actions by column: ▶ Launch on backlog, the relay (↵ Send, primary on needs) where there is an agent, then the ship actions (PR/push, merge, resolve). */
 function Actions({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
   const { pending } = useView();
   const waiting = (method: string) =>
@@ -31,16 +33,32 @@ function Actions({ board, ticket, api }: { board: Board; ticket: Ticket; api: De
         onLaunch={(s) => void api.launch(board.key, ticket.nn, s)}
       />
     );
-  if (WITH_AGENT.has(ticket.col))
-    return (
-      <Relay
-        primary={ticket.col === "needs"}
-        pending={waiting("say_agent")}
-        onSend={(message) => api.say(board.key, ticket.nn, message)}
-      />
-    );
-  return null;
+  return (
+    <>
+      {WITH_AGENT.has(ticket.col) && (
+        <Relay
+          primary={ticket.col === "needs"}
+          pending={waiting("say_agent")}
+          onSend={(message) => api.say(board.key, ticket.nn, message)}
+        />
+      )}
+      <ShipActions board={board} ticket={ticket} api={api} />
+    </>
+  );
 }
+
+/**
+ * After ✦ Update, how long the spinner waits for the run to start (synthesis_started
+ * sets the ticket running) before giving up: a refused request ends in a failed
+ * rpc_result toast instead.
+ */
+export const REFINE_START_MS = 15000;
+
+/**
+ * How long a tick shows before the box confirms it (the ticket's next snapshot): a
+ * tick the box failed (a failed rpc_result) or never ran goes back to the stored state.
+ */
+export const TICK_CONFIRM_MS = 15000;
 
 /** `backlog → working 14:02`, then `→ review 15:40` for the moves after the first. */
 function timelineText(e: ActivityEvent, first: boolean): string {
@@ -69,18 +87,19 @@ function ProposeMemory({ board, ticket, api }: { board: Board; ticket: Ticket; a
     });
   };
   return (
-    <div>
+    <div className={styles.propose}>
       <label className={styles.h} htmlFor="propose-memory">
         Propose to memory
       </label>
       <textarea
         id="propose-memory"
-        rows={2}
+        className={styles.proposeText}
+        rows={3}
         value={text}
         placeholder="A rule for docs/agents/project-memory.md"
         onChange={(e) => setText(e.target.value)}
       />
-      <button type="button" className={styles.action} disabled={busy || !text.trim()} onClick={send}>
+      <button type="button" className={`${styles.action} ${styles.proposeBtn}`} disabled={busy || !text.trim()} onClick={send}>
         Propose to memory
       </button>
     </div>
@@ -110,6 +129,124 @@ function Timeline({ board, ticket, api }: { board: Board; ticket: Ticket; api: D
         <li key={i}>{timelineText(e, i === 0)}</li>
       ))}
     </ol>
+  );
+}
+
+/** ✦ Update via agy, with an optional comment; spins while a run is asked for or running. */
+function Refine({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
+  const [comment, setComment] = useState("");
+  const [asked, setAsked] = useState(false);
+  const status = ticket.synthesis_status;
+  const seen = useRef(status);
+  // Any status change (started, finished, failed) takes over from the request.
+  useEffect(() => {
+    if (seen.current === status) return;
+    seen.current = status;
+    setAsked(false);
+  }, [status]);
+  useEffect(() => {
+    if (!asked) return;
+    const timer = setTimeout(() => setAsked(false), REFINE_START_MS);
+    return () => clearTimeout(timer);
+  }, [asked]);
+
+  async function send() {
+    setAsked(true);
+    if (await api.refine(board.key, ticket.nn, comment.trim())) setComment("");
+    else setAsked(false);
+  }
+
+  const running = asked || status === "running";
+  return (
+    <div className={styles.refine}>
+      <textarea
+        className={styles.comment}
+        aria-label="Comment for agy"
+        placeholder="Optional: what the next summary should fix"
+        rows={2}
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+      />
+      <div className={styles.refineRow}>
+        <button type="button" className={styles.action} disabled={running} onClick={() => void send()}>
+          ✦ Update via agy
+        </button>
+        {running && (
+          <span className={styles.running}>
+            <span className={styles.spinner} role="status" aria-label="Synthesis running" />
+            Updating...
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The manual checklist: ticks go to the box's hub-meta and show at once, undone if the hub refuses or the box never confirms. */
+function Checklist({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
+  const taskId = useId();
+  // Ticks not confirmed yet (text -> done), dropped once the ticket agrees.
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const tasks = ticket.manual_tasks;
+  useEffect(() => {
+    setPending((p) => {
+      const left = Object.entries(p).filter(([text, done]) => tasks.some((t) => t.text === text && t.done !== done));
+      return left.length === Object.keys(p).length ? p : Object.fromEntries(left);
+    });
+  }, [tasks]);
+
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    const all = timers.current;
+    return () => all.forEach(clearTimeout);
+  }, []);
+
+  function undo(text: string) {
+    clearTimeout(timers.current.get(text));
+    timers.current.delete(text);
+    setPending((p) => {
+      if (!(text in p)) return p;
+      const { [text]: _undone, ...rest } = p;
+      return rest;
+    });
+  }
+
+  function tick(text: string, done: boolean) {
+    setPending((p) => ({ ...p, [text]: done }));
+    clearTimeout(timers.current.get(text));
+    timers.current.set(text, setTimeout(() => undo(text), TICK_CONFIRM_MS));
+    void api.setTaskDone(board.key, ticket.nn, text, done).then((ok) => {
+      if (!ok) undo(text);
+    });
+  }
+
+  if (tasks.length === 0) return <p className={styles.muted}>Nothing to validate by hand.</p>;
+  return (
+    <ul className={styles.list}>
+      {tasks.map((t, i) => {
+        const done = pending[t.text] ?? t.done;
+        return (
+          <li key={i} data-done={done ? "true" : "false"}>
+            <div className={styles.task}>
+              <input
+                type="checkbox"
+                aria-labelledby={`${taskId}-${i}`}
+                checked={done}
+                onChange={(e) => tick(t.text, e.target.checked)}
+              />
+              <div id={`${taskId}-${i}`}>
+                <Markdown compact source={t.text} />
+              </div>
+            </div>
+            {t.source === "developer" && (
+              <span className={styles.tag} title="Added by you; synthesis never removes it">
+                you
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -161,11 +298,17 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
           <section className={styles.card} aria-label="Synthesis">
             <h3 className={styles.h}>Synthesis</h3>
             {ticket.summary ? (
-              <p className={styles.summary}>{ticket.summary}</p>
+              <div className={styles.summary}>
+                <Markdown compact source={ticket.summary} />
+              </div>
             ) : (
               <p className={styles.muted}>No summary yet.</p>
             )}
-            {ticket.reviewer_notes && <p className={styles.notes}>{ticket.reviewer_notes}</p>}
+            {ticket.reviewer_notes && (
+              <div className={styles.notes}>
+                <Markdown compact source={ticket.reviewer_notes} />
+              </div>
+            )}
             <dl className={styles.facts}>
               {ticket.branch && (
                 <>
@@ -176,6 +319,10 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
               <dt>Synthesis</dt>
               <dd>{ticket.synthesis_backend ? `${ticket.synthesis_backend} · ${ticket.synthesis_status}` : ticket.synthesis_status}</dd>
             </dl>
+            {ticket.synthesis_status === "failed" && ticket.synthesis_error && (
+              <p className={styles.error}>{ticket.synthesis_error}</p>
+            )}
+            <Refine board={board} ticket={ticket} api={api} />
             <button type="button" className={styles.action} onClick={() => setReport(true)}>
               ⤢ Full Review &amp; Reasoning
             </button>
@@ -183,20 +330,7 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
 
           <section className={styles.card} aria-label="Manual Validation Checklist">
             <h3 className={styles.h}>Manual Validation Checklist</h3>
-            {ticket.manual_tasks.length === 0 ? (
-              <p className={styles.muted}>Nothing to validate by hand.</p>
-            ) : (
-              <ul className={styles.list}>
-                {ticket.manual_tasks.map((t, i) => (
-                  <li key={i} data-done={t.done ? "true" : "false"}>
-                    <label>
-                      <input type="checkbox" checked={t.done} readOnly disabled />
-                      <span>{t.text}</span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <Checklist board={board} ticket={ticket} api={api} />
           </section>
 
           <section className={styles.card} aria-label="Project Memory">
@@ -206,9 +340,16 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
             ) : (
               <ul className={styles.list}>
                 {memory.map((m, i) => (
-                  <li key={i}>{m}</li>
+                  <li key={i}>
+                    <Markdown compact source={m} />
+                  </li>
                 ))}
               </ul>
+            )}
+            {ticket.new_memory_rule && (
+              <p className={styles.suggestion} aria-label="Suggested memory rule">
+                <span className={styles.tag}>Suggested</span> {ticket.new_memory_rule}
+              </p>
             )}
             <ProposeMemory board={board} ticket={ticket} api={api} />
           </section>

@@ -1,12 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { BoardSynced, ReportResponse, TicketMoved } from "../protocol/types";
+import type { BoardSynced, ReportResponse, SynthesisEvent, TicketMoved } from "../protocol/types";
 import { createStore } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { CardGrid } from "./CardGrid";
 import { LiveBoard } from "./LiveBoard";
 import { StoreProvider } from "./StoreContext";
-import { TicketSheet, type DetailApi } from "./TicketSheet";
+import { TICK_CONFIRM_MS, TicketSheet, type DetailApi } from "./TicketSheet";
 
 const KEY = "dev-daniel/ticket-skill/tk-hub";
 
@@ -18,6 +18,21 @@ const REPORT: ReportResponse = {
   body: "# Ticket body\n\nDo the thing.\n\n```py\nprint('hi')\n```",
 };
 
+function stubClient(): DetailApi {
+  return {
+    activity: async () => [],
+    report: async () => REPORT,
+    launch: async () => {},
+    say: async () => null,
+    paneTail: async () => {},
+    proposeMemory: async () => true,
+    ship: async () => true,
+    resolveNoCode: async () => true,
+    refine: async () => true,
+    setTaskDone: async () => true,
+  };
+}
+
 function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailApi> = {}) {
   const client: DetailApi = {
     activity: vi.fn().mockResolvedValue([
@@ -25,10 +40,14 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
       { from: "working", to: "review", at: "2026-10-23T15:40:00Z" },
     ]),
     report: vi.fn().mockResolvedValue(REPORT),
+    refine: vi.fn().mockResolvedValue(true),
+    setTaskDone: vi.fn().mockResolvedValue(true),
     proposeMemory: vi.fn().mockResolvedValue(true),
     launch: vi.fn().mockResolvedValue(undefined),
     say: vi.fn().mockResolvedValue(null),
     paneTail: vi.fn().mockResolvedValue(undefined),
+    ship: vi.fn().mockResolvedValue(true),
+    resolveNoCode: vi.fn().mockResolvedValue(true),
     ...api,
   };
   const store = createStore();
@@ -118,7 +137,7 @@ describe("TicketSheet", () => {
     setup();
     const mem = within(sheet()).getByRole("region", { name: "Project Memory" });
     expect(within(mem).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "`tk.sh` verbs run with the repo's main checkout as cwd, never a worktree.",
+      "tk.sh verbs run with the repo's main checkout as cwd, never a worktree.",
       "Shell scripts stay shellcheck-clean; logs go to stderr, data to stdout.",
     ]);
   });
@@ -159,7 +178,7 @@ describe("TicketSheet", () => {
   it("an injected script or HTML in any field renders inert", () => {
     const store = createStore();
     const data = boardsResponse();
-    const evil = `<script>window.__pwned=1</script><img src=x onerror="window.__pwned=1">`;
+    const evil = `visible-marker <script>window.__pwned=1</script><img src=x onerror="window.__pwned=1"><a href="x" onclick="window.__pwned=1">c</a> [x](javascript:window.__pwned=1)`;
     const board = data.boards.find((b) => b.key === KEY)!;
     board.project_memory = `1. ${evil}`;
     board.tickets[0] = {
@@ -173,19 +192,179 @@ describe("TicketSheet", () => {
     const { container } = render(
       <StoreProvider store={store}>
         <TicketSheet
-          client={{
-            activity: async () => [],
-            report: async () => REPORT,
-            launch: async () => {},
-            say: async () => null,
-            paneTail: async () => {},
-            proposeMemory: async () => true,
-          }}
+          client={stubClient()}
         />
       </StoreProvider>,
     );
-    expect(container.ownerDocument.querySelector("script, img[onerror]")).toBeNull();
-    expect(screen.getAllByText(evil).length).toBeGreaterThan(0);
+    expect(container.ownerDocument.querySelector("script, iframe, [onerror], [onclick]")).toBeNull();
+    expect(container.ownerDocument.querySelector('a[href^="javascript:"]')).toBeNull();
+    // the fields still rendered, as inert text
+    expect(within(sheet()).queryAllByRole("link")).toHaveLength(0);
+    expect(sheet().textContent).toContain("visible-marker");
+  });
+
+  it("keeps paragraphs and single newlines in summary and notes", () => {
+    const store = createStore();
+    const data = boardsResponse();
+    data.boards.find((b) => b.key === KEY)!.tickets[0] = {
+      ...data.boards.find((b) => b.key === KEY)!.tickets[0],
+      summary: "First para.\n\nSecond para.",
+      reviewer_notes: "line one\nline two",
+    };
+    store.load(data);
+    store.openTicket(KEY, "01");
+    render(
+      <StoreProvider store={store}>
+        <TicketSheet client={stubClient()} />
+      </StoreProvider>,
+    );
+    const first = within(sheet()).getByText("First para.");
+    expect(first.tagName).toBe("P");
+    expect(within(sheet()).getByText("Second para.").tagName).toBe("P");
+    expect(first).not.toBe(within(sheet()).getByText("Second para."));
+    const notes = within(sheet()).getByText(/line one/);
+    expect(notes.tagName).toBe("P");
+    expect(notes.textContent).toBe("line one\nline two"); // CSS (.compact p) keeps the break visible
+  });
+
+  it("renders Markdown in summary, notes, checklist and memory (code, no literal backticks)", () => {
+    const store = createStore();
+    const data = boardsResponse();
+    const board = data.boards.find((b) => b.key === KEY)!;
+    board.project_memory = "- run `bin/devbox-config` first";
+    board.tickets[0] = {
+      ...board.tickets[0],
+      summary: "Use `$DEVBOX_CLIENTS` here",
+      reviewer_notes: "Check `jq .a` and **bold**",
+      manual_tasks: [
+        { text: "Run `make test`", done: true, source: "synthesis" },
+        { text: "Open [docs](https://example.com)", done: false, source: "synthesis" },
+      ],
+    };
+    store.load(data);
+    store.openTicket(KEY, "01");
+    render(
+      <StoreProvider store={store}>
+        <TicketSheet client={stubClient()} />
+      </StoreProvider>,
+    );
+    const s = sheet();
+    for (const code of ["bin/devbox-config", "$DEVBOX_CLIENTS", "jq .a", "make test"]) {
+      expect(within(s).getByText(code).tagName).toBe("CODE");
+    }
+    expect(s.textContent).not.toContain("`");
+    expect(within(s).getByText("bold").tagName).toBe("STRONG");
+    expect(within(s).getByRole("link", { name: "docs" })).toHaveAttribute("href", "https://example.com");
+    // ticking state still mirrors the data, and the label still names the checkbox
+    const boxes = within(within(s).getByRole("region", { name: "Manual Validation Checklist" })).getAllByRole("checkbox");
+    const checklist = within(s).getByRole("region", { name: "Manual Validation Checklist" });
+    expect(within(checklist).getByRole("checkbox", { name: "Run make test" })).toBeChecked();
+    expect(within(checklist).getByRole("checkbox", { name: "Open docs" })).not.toBeChecked();
+    expect(boxes.length).toBe(2);
+  });
+});
+
+describe("checklist and refine", () => {
+  const checklist = () => within(sheet()).getByRole("region", { name: "Manual Validation Checklist" });
+  const box = (name: string) => within(checklist()).getByRole("checkbox", { name }) as HTMLInputElement;
+  const UNKNOWN = "Check an unknown board exits non-zero";
+  const started = (): SynthesisEvent => fixture<SynthesisEvent>("synthesis-started");
+
+  it("a tick goes to the hub and shows at once", async () => {
+    const { client } = setup();
+    fireEvent.click(box(UNKNOWN));
+    expect(client.setTaskDone).toHaveBeenCalledWith(KEY, "01", UNKNOWN, true);
+    expect(box(UNKNOWN).checked).toBe(true);
+    fireEvent.click(box("Run tk.sh export against a real board and pipe through jq -e"));
+    expect(client.setTaskDone).toHaveBeenLastCalledWith(
+      KEY,
+      "01",
+      "Run tk.sh export against a real board and pipe through jq -e",
+      false,
+    );
+  });
+
+  it("a tick the hub refuses is undone", async () => {
+    setup([KEY, "01"], { setTaskDone: vi.fn().mockResolvedValue(false) });
+    fireEvent.click(box(UNKNOWN));
+    await waitFor(() => expect(box(UNKNOWN).checked).toBe(false));
+  });
+
+  it("a tick the box never confirms is undone after TICK_CONFIRM_MS", async () => {
+    vi.useFakeTimers();
+    try {
+      setup();
+      fireEvent.click(box(UNKNOWN));
+      expect(box(UNKNOWN).checked).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TICK_CONFIRM_MS);
+      });
+      expect(box(UNKNOWN).checked).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("✦ Update via agy is disabled while a run is running", () => {
+    const { store } = setup();
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    act(() => store.apply(started()));
+    expect(within(card).getByRole("button", { name: "✦ Update via agy" })).toBeDisabled();
+  });
+
+  it("marks developer items", () => {
+    setup();
+    const item = box("Try it on the home-assistant board too").closest("li")!;
+    expect(within(item).getByText("you")).toBeInTheDocument();
+  });
+
+  it("✦ Update via agy sends the comment and spins until the run finishes", async () => {
+    const { store, client } = setup();
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    expect(within(card).queryByRole("status", { name: "Synthesis running" })).not.toBeInTheDocument();
+    fireEvent.change(within(card).getByRole("textbox", { name: "Comment for agy" }), {
+      target: { value: "Shorter, please." },
+    });
+    fireEvent.click(within(card).getByRole("button", { name: "✦ Update via agy" }));
+    expect(client.refine).toHaveBeenCalledWith(KEY, "01", "Shorter, please.");
+    expect(within(card).getByRole("status", { name: "Synthesis running" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "✦ Update via agy" })).toBeDisabled();
+    await waitFor(() => expect(within(card).getByRole("textbox", { name: "Comment for agy" })).toHaveValue(""));
+    act(() => store.apply(started()));
+    expect(within(card).getByText("agy · running")).toBeInTheDocument();
+    act(() => store.apply({ ...started(), type: "synthesis_finished" }));
+    expect(within(card).queryByRole("status", { name: "Synthesis running" })).not.toBeInTheDocument();
+    expect(within(card).getByText("agy · ok")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "✦ Update via agy" })).toBeEnabled();
+  });
+
+  it("a refine the hub refuses stops the spinner and keeps the comment", async () => {
+    setup([KEY, "01"], { refine: vi.fn().mockResolvedValue(false) });
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    fireEvent.change(within(card).getByRole("textbox", { name: "Comment for agy" }), { target: { value: "x" } });
+    fireEvent.click(within(card).getByRole("button", { name: "✦ Update via agy" }));
+    await waitFor(() =>
+      expect(within(card).queryByRole("status", { name: "Synthesis running" })).not.toBeInTheDocument(),
+    );
+    expect(within(card).getByRole("textbox", { name: "Comment for agy" })).toHaveValue("x");
+  });
+
+  it("a failed run shows its reason under the backend label", () => {
+    const { store } = setup();
+    act(() =>
+      store.apply({ ...fixture<SynthesisEvent>("synthesis-failed"), board_key: KEY, nn: "01", error: "agy: invalid output" }),
+    );
+    const card = within(sheet()).getByRole("region", { name: "Synthesis" });
+    expect(within(card).getByText("agy · failed")).toBeInTheDocument();
+    expect(within(card).getByText("agy: invalid output")).toBeInTheDocument();
+  });
+
+  it("shows the run's new_memory_rule as a suggestion", () => {
+    setup();
+    const mem = within(sheet()).getByRole("region", { name: "Project Memory" });
+    expect(within(mem).getByLabelText("Suggested memory rule")).toHaveTextContent(
+      "Export verbs print JSON only on stdout; everything else goes to stderr.",
+    );
   });
 });
 
@@ -218,7 +397,7 @@ describe("report modal", () => {
   });
 
   it("strips script and HTML injection from both documents", async () => {
-    const evil = `<script>window.__pwned=1</script><img src=x onerror="window.__pwned=1"><a href="javascript:alert(1)">x</a>`;
+    const evil = `visible-marker <script>window.__pwned=1</script><img src=x onerror="window.__pwned=1"><a href="javascript:alert(1)">x</a>`;
     setup([KEY, "01"], { report: async () => ({ ...REPORT, full_report_md: `# R\n\n${evil}`, body: `# B\n\n${evil}` }) });
     fireEvent.click(within(sheet()).getByRole("button", { name: "⤢ Full Review & Reasoning" }));
     const m = await screen.findByRole("dialog", { name: "Full Review & Reasoning" });
