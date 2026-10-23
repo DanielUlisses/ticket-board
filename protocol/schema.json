@@ -722,6 +722,69 @@
         "protocol_version": { "$ref": "#/$defs/protocol_version" },
         "refused_reason": { "description": "Set when the hub refused the daemon (e.g. major protocol_version mismatch), shown in the UI.", "type": "string" }
       }
+    },
+
+    "rest_boards": {
+      "description": "REST: GET /api/boards. Every board the hub holds (stale ones included) and every devbox it has heard from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boards", "devboxes"],
+      "properties": {
+        "boards": { "type": "array", "items": { "$ref": "#/$defs/board" } },
+        "devboxes": { "type": "array", "items": { "$ref": "#/$defs/devbox_status" } }
+      }
+    },
+    "rest_report": {
+      "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/report. body: the ticket file's raw text when the daemon sends it as the ticket's `body`, else null.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "title", "full_report_md", "body"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "title": { "type": "string" },
+        "full_report_md": { "type": ["string", "null"] },
+        "body": { "type": ["string", "null"] }
+      }
+    },
+    "rest_activity": {
+      "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/activity. The ticket's column moves, oldest first.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "events"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "events": { "type": "array", "items": { "$ref": "#/$defs/ticket_moved" } }
+      }
+    },
+    "rest_scan": {
+      "description": "REST: POST /api/scan (body {devbox?}, or empty for every connected devbox) -> 202. One rescan_boards rpc per devbox reached; each rpc_result arrives on /ws/ui.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rpcs"],
+      "properties": {
+        "rpcs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "devbox"],
+            "properties": {
+              "id": { "$ref": "#/$defs/rpc_id" },
+              "devbox": { "$ref": "#/$defs/name" }
+            }
+          }
+        }
+      }
+    },
+    "rest_error": {
+      "description": "REST: any 4xx/5xx. detail is a message, or FastAPI's list of validation errors (422).",
+      "type": "object",
+      "required": ["detail"],
+      "properties": {
+        "detail": { "oneOf": [{ "type": "string" }, { "type": "array" }] }
+      }
     }
   }
 }
