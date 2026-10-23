@@ -471,8 +471,8 @@
         "board_key": { "$ref": "#/$defs/board_key" },
         "nn": { "$ref": "#/$defs/nn" },
         "type": { "enum": ["feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci"] },
-        "model": { "type": "string", "minLength": 1 },
-        "effort": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]*$" },
+        "effort": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]*$" },
         "manual": { "type": "boolean" }
       }
     },
@@ -775,6 +775,51 @@
             "properties": {
               "id": { "$ref": "#/$defs/rpc_id" },
               "devbox": { "$ref": "#/$defs/name" }
+            }
+          }
+        }
+      }
+    },
+    "rest_action_request": {
+      "description": "REST: POST /api/boards/{board_key}/tickets/{nn}/action body. One ticket RPC for the board's daemon; the hub adds board_key and nn to params, and the whole rpc must then match the schema (else 422).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "params"],
+      "properties": {
+        "method": { "enum": ["launch_ticket", "say_agent", "pane_tail"] },
+        "params": { "type": "object" }
+      }
+    },
+    "rest_action": {
+      "description": "REST: 202 from POST /api/boards/{board_key}/tickets/{nn}/action (one rpc) and POST /api/boards/{board_key}/frontier (one launch_ticket per backlog ticket, manual false, with its suggested model/effort; skipped: the backlog tickets it could not launch). 409 when the devbox is not connected. Each rpc_result arrives on /ws/ui.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rpcs"],
+      "properties": {
+        "rpcs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "devbox", "method", "board_key", "nn"],
+            "properties": {
+              "id": { "$ref": "#/$defs/rpc_id" },
+              "devbox": { "$ref": "#/$defs/name" },
+              "method": { "$ref": "#/$defs/rpc_method" },
+              "board_key": { "$ref": "#/$defs/board_key" },
+              "nn": { "$ref": "#/$defs/nn" }
+            }
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["nn", "reason"],
+            "properties": {
+              "nn": { "$ref": "#/$defs/nn" },
+              "reason": { "type": "string", "minLength": 1 }
             }
           }
         }

@@ -1,9 +1,10 @@
 // The one store of hub-web: boards and devboxes from `GET /api/boards`, kept
-// live by the /ws/ui events, plus the UI's own filters, page and toasts.
+// live by the /ws/ui events, plus the UI's own filters, page and toasts, the
+// actions waiting on their rpc_result and the agent panes (pane_tail).
 // Components read it through `view()` (a cached snapshot, stable between
 // changes, so it plugs into useSyncExternalStore) and never keep their own copy.
 import { COLUMN_META, type Group } from "../columns";
-import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, UiEvent } from "../protocol/types";
+import type { Board, BoardsResponse, Devbox, Ticket, RpcResult, SentRpc, UiEvent } from "../protocol/types";
 
 /** The Stage select and the pills: one filter, over the column groups. */
 export type Stage = "all" | Group;
@@ -21,8 +22,15 @@ export type Page = "cards" | "live";
 
 export interface Toast {
   id: number;
-  kind: "ok" | "error";
+  kind: "ok" | "warn" | "error";
   text: string;
+}
+
+/** An agent's recent output (pane_tail), or why there is none. */
+export interface Pane {
+  ok: boolean;
+  text: string;
+  reason: string | null;
 }
 
 export interface View {
@@ -42,6 +50,12 @@ export interface View {
   toasts: Toast[];
   /** The ticket open in the sheet, read from the live (unfiltered) boards. */
   sheet: { board: Board; ticket: Ticket } | null;
+  /** Actions sent and waiting on their rpc_result (spinners). */
+  pending: SentRpc[];
+  /** ok of every tracked action that has finished, by rpc id. */
+  settled: Readonly<Record<string, boolean>>;
+  /** The last pane_tail per ticket, by `ticketId`. */
+  panes: Readonly<Record<string, Pane>>;
 }
 
 interface State {
@@ -52,6 +66,9 @@ interface State {
   justMoved: ReadonlySet<string>;
   toasts: Toast[];
   opened: { boardKey: string; nn: string } | null;
+  pending: SentRpc[];
+  settled: Record<string, boolean>;
+  panes: Record<string, Pane>;
 }
 
 const NO_FILTER: Filter = { devbox: null, board: null, stage: "all" };
@@ -67,11 +84,39 @@ const inStage = (stage: Stage, t: Ticket) => stage === "all" || COLUMN_META[t.co
  */
 export const JUST_MOVED_MS = 3000;
 
+/**
+ * How long a tracked action stays pending without its rpc_result: the hub's rpc
+ * timeout for ticket actions (120 s, TIMEOUT in hub.py) plus a margin. Past it,
+ * the result was lost (a /ws/ui gap) and the spinner stops, with a warning.
+ */
+export const PENDING_EXPIRY_MS = 135_000;
+
+/** How many finished actions `settled` remembers. */
+const SETTLED_KEPT = 200;
+
 export const ticketId = (boardKey: string, nn: string) => `${boardKey}#${nn}`;
+
+/**
+ * The result the hub (hub.py `_failed`) or the daemon sends when an rpc ran out
+ * of time: nothing ran to report, only `timed out after <N>s`. A launch_ticket
+ * like that may still be queued or running on the box (the daemon never cancels
+ * a launch), so it is not a failure yet.
+ */
+const RPC_TIMED_OUT = /^timed out after \d+(\.\d+)?s$/;
+const timedOut = (r: RpcResult) =>
+  !r.ok && r.exit_code === null && r.output_tail === "" && RPC_TIMED_OUT.test(r.reason ?? "");
 
 function rpcToast(r: RpcResult): Omit<Toast, "id"> {
   const prefix = r.method ? `${r.method}: ` : "";
+  const d = r.data ?? {};
+  if (r.ok && d.over_cap === true)
+    return {
+      kind: "warn",
+      text: `${prefix}manual launch over max_parallel: ${d.running} running, cap ${d.max_parallel}`,
+    };
   if (r.ok) return { kind: "ok", text: prefix + (r.output_tail.trim() || "done") };
+  if (r.method === "launch_ticket" && timedOut(r))
+    return { kind: "warn", text: `launch_ticket #${r.nn ?? "?"}: still running on the box, may still launch; watch the board` };
   const why = r.reason || r.output_tail.trim() || `exit ${r.exit_code ?? "?"}`;
   return { kind: "error", text: `${prefix}failed: ${why}` };
 }
@@ -85,11 +130,23 @@ export function createStore() {
     justMoved: new Set(),
     toasts: [],
     opened: null,
+    pending: [],
+    settled: {},
+    panes: {},
   };
   let cached: View | null = null;
   let nextToast = 1;
   const listeners = new Set<() => void>();
   const moveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function expire(id: string) {
+    pendingTimers.delete(id);
+    const lost = state.pending.find((p) => p.id === id);
+    if (!lost) return;
+    set({ pending: state.pending.filter((p) => p.id !== id) });
+    toast({ kind: "warn", text: `${lost.method} #${lost.nn}: no result came back; check the board` });
+  }
 
   function set(next: Partial<State>) {
     state = { ...state, ...next };
@@ -151,9 +208,32 @@ export function createStore() {
         });
         return;
       }
-      case "rpc_result":
+      case "rpc_result": {
+        clearTimeout(pendingTimers.get(event.id));
+        pendingTimers.delete(event.id);
+        const pending = state.pending.filter((p) => p.id !== event.id);
+        if (event.method === "pane_tail" && event.board_key && event.nn) {
+          // A poll: the pane shows it, no toast.
+          const pane = event.data?.pane;
+          set({
+            pending,
+            panes: {
+              ...state.panes,
+              [ticketId(event.board_key, event.nn)]: {
+                ok: event.ok,
+                text: typeof pane === "string" ? pane : "",
+                reason: event.ok ? null : event.reason || event.output_tail.trim() || `exit ${event.exit_code ?? "?"}`,
+              },
+            },
+          });
+          return;
+        }
+        // Also kept for a result that beats its POST's answer (track then ignores it).
+        const settled = Object.entries({ ...state.settled, [event.id]: event.ok }).slice(-SETTLED_KEPT);
+        set({ pending, settled: Object.fromEntries(settled) });
         toast(rpcToast(event));
         return;
+      }
       default:
         // synthesis_* belong to the ticket sheet and board panel (tickets 17, 18).
         return;
@@ -210,6 +290,9 @@ export function createStore() {
       justMoved: state.justMoved,
       toasts: state.toasts,
       sheet: openedSheet(),
+      pending: state.pending,
+      settled: state.settled,
+      panes: state.panes,
     };
   }
 
@@ -232,6 +315,13 @@ export function createStore() {
       set({ opened: null });
     },
     toast,
+    /** Actions the hub accepted: pending (a spinner) until their rpc_result, or PENDING_EXPIRY_MS. */
+    track(rpcs: SentRpc[]) {
+      const fresh = rpcs.filter((r) => !(r.id in state.settled) && !state.pending.some((p) => p.id === r.id));
+      if (fresh.length === 0) return;
+      for (const r of fresh) pendingTimers.set(r.id, setTimeout(() => expire(r.id), PENDING_EXPIRY_MS));
+      set({ pending: [...state.pending, ...fresh] });
+    },
     dismiss(id: number) {
       set({ toasts: state.toasts.filter((t) => t.id !== id) });
     },

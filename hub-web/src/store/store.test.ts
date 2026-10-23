@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Board, BoardSynced, DevboxStatus, TicketMoved } from "../protocol/types";
 import { boardsResponse, fixture } from "../test/fixtures";
-import { createStore, ticketId } from "./store";
+import { createStore, PENDING_EXPIRY_MS, ticketId } from "./store";
 
 const loaded = () => {
   const store = createStore();
@@ -164,6 +164,22 @@ describe("store", () => {
     });
   });
 
+  it("a launch timed out by the hub or daemon warns it may still launch; a failed launch stays an error", () => {
+    const store = createStore();
+    const launch = { type: "rpc_result", ok: false, exit_code: null, output_tail: "", devbox: "dev-daniel",
+                     method: "launch_ticket", board_key: "a/b/c", nn: "27" } as const; // prettier-ignore
+    store.apply({ ...launch, id: "r-1", reason: "timed out after 120s" });
+    store.apply({ ...launch, id: "r-2", reason: "tk.sh launch timed out after 900s" });
+    store.apply({ ...launch, id: "r-3", exit_code: 1, output_tail: "ERROR: launch failed", reason: "timed out after 120s" });
+    store.apply({ ...launch, id: "r-4", method: "say_agent", reason: "timed out after 120s" });
+    expect(store.view().toasts.map((t) => [t.kind, t.text])).toEqual([
+      ["warn", "launch_ticket #27: still running on the box, may still launch; watch the board"],
+      ["error", "launch_ticket: failed: tk.sh launch timed out after 900s"],
+      ["error", "launch_ticket: failed: timed out after 120s"],
+      ["error", "say_agent: failed: timed out after 120s"],
+    ]);
+  });
+
   it("notifies subscribers on every change and stops after unsubscribe", () => {
     const store = createStore();
     let calls = 0;
@@ -191,5 +207,24 @@ describe("store", () => {
     expect(store.view().sheet).toBeNull();
     store.apply({ type: "board_synced", board });
     expect(store.view().sheet).toBeNull();
+  });
+
+  it("a tracked action whose rpc_result never arrives stops pending after the hub's timeout, with a warning", () => {
+    vi.useFakeTimers();
+    try {
+      const store = createStore();
+      store.track([{ id: "r-1", devbox: "dev-daniel", method: "launch_ticket", board_key: "a/b/c", nn: "27" }]);
+      expect(PENDING_EXPIRY_MS).toBeGreaterThan(120_000); // the hub times an rpc out after 120 s
+      vi.advanceTimersByTime(PENDING_EXPIRY_MS - 1);
+      expect(store.view().pending.map((p) => p.id)).toEqual(["r-1"]);
+      expect(store.view().toasts).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(store.view().pending).toEqual([]);
+      expect(store.view().toasts.map((t) => [t.kind, t.text])).toEqual([
+        ["warn", "launch_ticket #27: no result came back; check the board"],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

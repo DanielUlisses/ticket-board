@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { BoardSynced, TicketMoved } from "../protocol/types";
+import type { BoardSynced, ReportResponse, TicketMoved } from "../protocol/types";
 import { createStore } from "../store/store";
 import { boardsResponse, fixture } from "../test/fixtures";
 import { CardGrid } from "./CardGrid";
@@ -10,10 +10,10 @@ import { TicketSheet, type DetailApi } from "./TicketSheet";
 
 const KEY = "dev-daniel/ticket-skill/tk-hub";
 
-const REPORT = {
+const REPORT: ReportResponse = {
   board_key: KEY,
   nn: "01",
-  title: "Export",
+  title: "Ticket 01",
   full_report_md: "## Coordinator report\n\n```sh\ntk.sh export tk-hub\n```",
   body: "# Ticket body\n\nDo the thing.\n\n```py\nprint('hi')\n```",
 };
@@ -25,6 +25,9 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
       { from: "working", to: "review", at: "2026-10-23T15:40:00Z" },
     ]),
     report: vi.fn().mockResolvedValue(REPORT),
+    launch: vi.fn().mockResolvedValue(undefined),
+    say: vi.fn().mockResolvedValue(null),
+    paneTail: vi.fn().mockResolvedValue(undefined),
     ...api,
   };
   const store = createStore();
@@ -126,7 +129,7 @@ describe("TicketSheet", () => {
     expect(client.activity).toHaveBeenCalledWith(KEY, "01");
   });
 
-  it("has an agent pane placeholder", () => {
+  it("has an agent pane", () => {
     setup();
     expect(within(sheet()).getByRole("region", { name: "Agent pane" })).toBeInTheDocument();
   });
@@ -168,7 +171,15 @@ describe("TicketSheet", () => {
     store.openTicket(KEY, "01");
     const { container } = render(
       <StoreProvider store={store}>
-        <TicketSheet client={{ activity: async () => [], report: async () => REPORT }} />
+        <TicketSheet
+          client={{
+            activity: async () => [],
+            report: async () => REPORT,
+            launch: async () => {},
+            say: async () => null,
+            paneTail: async () => {},
+          }}
+        />
       </StoreProvider>,
     );
     expect(container.ownerDocument.querySelector("script, img[onerror]")).toBeNull();
@@ -212,6 +223,14 @@ describe("report modal", () => {
     await within(m).findByRole("heading", { name: "R" });
     expect(m.querySelector("script, img[onerror]")).toBeNull();
     expect(m.querySelector('a[href^="javascript"]')).toBeNull();
+  });
+
+  it("says so when the hub has no ticket body (rest_report body null)", async () => {
+    setup([KEY, "01"], { report: async () => ({ ...REPORT, full_report_md: "# R", body: null }) });
+    fireEvent.click(within(sheet()).getByRole("button", { name: "⤢ Full Review & Reasoning" }));
+    const m = await screen.findByRole("dialog", { name: "Full Review & Reasoning" });
+    await within(m).findByRole("heading", { name: "R" });
+    expect(within(within(m).getByRole("region", { name: "Ticket body" })).getByText("No ticket body.")).toBeInTheDocument();
   });
 
   it("closes on its backdrop and leaves the sheet open", async () => {
