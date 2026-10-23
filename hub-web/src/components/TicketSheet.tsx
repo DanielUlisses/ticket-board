@@ -8,7 +8,7 @@ import { useStore, useView } from "./StoreContext";
 import styles from "./TicketSheet.module.css";
 
 /** The hub calls the sheet makes. */
-export type DetailApi = Pick<HubClient, "activity" | "report">;
+export type DetailApi = Pick<HubClient, "activity" | "report" | "proposeMemory">;
 
 /** `backlog → working 14:02`, then `→ review 15:40` for the moves after the first. */
 function timelineText(e: ActivityEvent, first: boolean): string {
@@ -21,6 +21,38 @@ function memoryItems(md: string | null): string[] {
     .split("\n")
     .map((l) => /^\s*(?:[-*]|\d+\.)\s+(.*\S)\s*$/.exec(l)?.[1])
     .filter((x): x is string => !!x);
+}
+
+/** "Propose to memory": prefilled from synthesis, editable; sends a ticket, never edits the file. */
+function ProposeMemory({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
+  const [typed, setTyped] = useState<string | null>(null); // null until the developer edits
+  const text = typed ?? ticket.new_memory_rule ?? "";
+  const setText = setTyped;
+  const [busy, setBusy] = useState(false);
+  const send = () => {
+    setBusy(true);
+    void api.proposeMemory(board.key, text.trim()).then((ok) => {
+      setBusy(false);
+      if (ok) setTyped(""); // sent: the prefill is spent too
+    });
+  };
+  return (
+    <div>
+      <label className={styles.h} htmlFor="propose-memory">
+        Propose to memory
+      </label>
+      <textarea
+        id="propose-memory"
+        rows={2}
+        value={text}
+        placeholder="A rule for docs/agents/project-memory.md"
+        onChange={(e) => setText(e.target.value)}
+      />
+      <button type="button" className={styles.action} disabled={busy || !text.trim()} onClick={send}>
+        Propose to memory
+      </button>
+    </div>
+  );
 }
 
 function Timeline({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
@@ -146,6 +178,7 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
                 ))}
               </ul>
             )}
+            <ProposeMemory board={board} ticket={ticket} api={api} />
           </section>
 
           <section className={styles.card} aria-label="Activity">

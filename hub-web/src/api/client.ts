@@ -142,6 +142,24 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
       }
       return false;
     },
+    /** Proposes a project-memory rule: the board's daemon appends a ticket for it (the hub never writes project-memory.md). */
+    async proposeMemory(boardKey: string, text: string): Promise<boolean> {
+      try {
+        const res = await doFetch(`${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/memory`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (res.ok) {
+          store.toast({ kind: "ok", text: "Memory ticket proposed." });
+          return true;
+        }
+        store.toast({ kind: "error", text: `Memory not proposed: ${await errorText(res)}` });
+      } catch (err) {
+        store.toast({ kind: "error", text: `Memory not proposed: ${(err as Error).message}` });
+      }
+      return false;
+    },
     /** ↻ Scan: a forced full rescan of one devbox, or every box when null. */
     async scan(devbox: string | null) {
       const scope = devbox ?? "all devboxes";

@@ -66,6 +66,8 @@ export interface Ticket {
   manual_tasks: ManualTask[];
   synthesis_backend: SynthesisBackend | null;
   synthesis_status: SynthesisStatus;
+  /** A rule synthesis suggests for project memory; prefills "Propose to memory". */
+  new_memory_rule?: string | null;
 }
 
 /** `$defs/policy` (subset): `tk.sh policy <board>`, resolved. */

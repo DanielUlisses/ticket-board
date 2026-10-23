@@ -262,6 +262,7 @@ class Daemon:
             "rescan_boards": self.rpc_rescan_boards,
             "set_archived": self.rpc_set_archived,
             "set_policy": self.rpc_set_policy,
+            "propose_memory": self.rpc_propose_memory,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -450,6 +451,82 @@ class Daemon:
             [tk, "policy-set", board["board_path"], *args], cwd=board["root"]
         )
         return {"ok": code == 0, "exit_code": code, "output_tail": out + err}
+
+    async def rpc_propose_memory(self, ws, params: dict) -> dict:
+        """Project memory only changes through a ticket: append the next-numbered
+        ticket to the board asking for the rule; it then flows through the normal
+        scheduler and merge gate. Nothing here writes project-memory.md."""
+        b = self.sent.get(params.get("board_key"))
+        text = params.get("text")
+        if b is None:
+            raise ValueError(f"no board {params.get('board_key')!r} on this box")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("empty memory rule")
+        text = text.strip()
+        rule = " ".join(text.split())
+        short = rule if len(rule) <= 72 else rule[:71].rstrip() + "…"
+        board = Path(b["board_path"])
+        if not board.is_dir():
+            raise ValueError(
+                f"{board} is not a directory: single-file boards are unsupported"
+            )
+        # NN is one sequence across every repo of the feature: the boards sharing
+        # this board_id on this box, and each repo path listed in <board>/repos.
+        dirs = {board / "issues"}
+        nums: list[int] = []
+        for other in self.sent.values():
+            if other.get("board_id") == b["board_id"]:
+                dirs.add(Path(other["board_path"]) / "issues")
+                nums += [
+                    int(t["nn"])
+                    for t in other.get("tickets", [])
+                    if str(t.get("nn")).isdigit()
+                ]
+        repos = board / "repos"
+        if repos.is_file():
+            for line in repos.read_text().splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    dirs.add(
+                        Path(parts[1].strip()) / ".scratch" / b["board_id"] / "issues"
+                    )
+        for d in dirs:
+            nums += [
+                int(m.group(1))
+                for f in d.glob("*.md")
+                if (m := re.match(r"(\d+)", f.name))
+            ]
+        n = max(nums, default=0) + 1
+        slug = re.sub(r"[^a-z0-9]+", "-", f"project memory {short}".lower())[:60]
+        slug = slug.strip("-")
+        issues = board / "issues"
+        issues.mkdir(exist_ok=True)
+        quoted = text.replace("\n", "\n> ")
+        while True:
+            nn = f"{n:02d}"
+            path = issues / f"{nn}-{slug}.md"
+            try:
+                fh = path.open("x")  # exclusive: never overwrite a ticket
+            except FileExistsError:
+                n += 1
+                continue
+            break
+        with fh:
+            fh.write(
+                f"# {nn}: Project memory — {short}\n\n"
+                "**What to build:** Add this rule to `docs/agents/project-memory.md` in "
+                "that file's voice (match its existing style and numbering), and prune "
+                "any line this makes stale or redundant. Change nothing else.\n\n"
+                f"> {quoted}\n\n"
+                f"**Repo:** {b['repo']} — {b['root']}\n"
+                "**Blocked by:** None\n"
+                "**Seams under test:** None — docs only\n"
+                "**Suggested model:** sonnet\n"
+                "**Suggested effort:** low\n\n"
+                "- [ ] the rule is in `docs/agents/project-memory.md`, in the file's voice\n"
+                "- [ ] stale or duplicate lines are pruned\n"
+            )
+        return {"ok": True, "exit_code": 0, "output_tail": f"wrote {path}"}
 
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")
