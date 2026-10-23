@@ -1,0 +1,38 @@
+/* Prototype .board-subpill; the health dot and label are this ticket's addition. */
+.pill,
+.plain {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.pill {
+  font-size: 10.5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 9999px;
+}
+.plain {
+  font-size: 10px;
+  flex-wrap: wrap;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--text-faint);
+}
+.label {
+  color: var(--text-faint);
+}
+.pill[data-health="ok"] .dot,
+.plain[data-health="ok"] .dot { background: var(--icon-working); }
+.pill[data-health="herdr-down"] .dot,
+.plain[data-health="herdr-down"] .dot { background: var(--icon-review); }
+.pill[data-health="offline"] .dot,
+.plain[data-health="offline"] .dot,
+.pill[data-health="refused"] .dot,
+.plain[data-health="refused"] .dot { background: var(--icon-urgent); }

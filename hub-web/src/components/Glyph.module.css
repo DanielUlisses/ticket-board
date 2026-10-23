@@ -1,0 +1,21 @@
+/* Prototype .status-glyph and its five variants. */
+.glyph {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.glyph[data-variant="needs"] { color: var(--icon-urgent); border-color: var(--glyph-needs-border); background: var(--glyph-needs-bg); }
+.glyph[data-variant="human"] { color: var(--icon-human); border-color: var(--glyph-human-border); background: var(--glyph-human-bg); }
+.glyph[data-variant="pr"] { color: var(--icon-pr); border-color: var(--glyph-pr-border); background: var(--glyph-pr-bg); }
+.glyph[data-variant="working"] { color: var(--icon-working); border-color: var(--glyph-working-border); background: var(--glyph-working-bg); }
+.glyph[data-variant="review"] { color: var(--icon-review); border-color: var(--glyph-review-border); background: var(--glyph-review-bg); }
