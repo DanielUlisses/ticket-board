@@ -257,6 +257,7 @@
         "title": { "type": "string" },
         "ref": { "description": "Ticket file name.", "type": "string" },
         "file": { "description": "Absolute path of the ticket file.", "type": "string" },
+        "body": { "description": "The ticket file's raw text, cut at ~20 kB with a [...cut...] marker; null when the file is not absolute, not a regular file, or unreadable.", "type": ["string", "null"] },
         "status": { "enum": ["open", "in-progress", "resolved"] },
         "branch": { "type": "string" },
         "base": { "description": "Base sha recorded at launch, or empty.", "type": "string" },

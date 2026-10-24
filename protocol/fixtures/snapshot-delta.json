@@ -72,6 +72,7 @@
           "title": "Install agy and cursor-agent on every box",
           "ref": "05-install-agy-and-cursor-a.md",
           "file": "/home/daniel/work/devboxes/.scratch/tk-hub/issues/05-install-agy-and-cursor-a.md",
+          "body": "# 05: Install agy\n\n**What to build:** ...",
           "status": "in-progress",
           "branch": "feat-05-install-agy-and-cursor-a",
           "base": "359532c553e85828153dc96f3cc69876c608aa25",
