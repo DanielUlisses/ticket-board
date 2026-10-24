@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Pr, RpcResult, Ticket } from "../protocol/types";
 import { createStore } from "../store/store";
@@ -17,10 +17,13 @@ const PR: Pr = {
   checks: [{ n: "build", s: "bad" }],
 };
 
+const HASH = "sha256:" + "b".repeat(64);
+const APPROVED = { approved: true, diff_hash: HASH, at: "2026-10-23T10:00:00Z" };
+
 function setup(boardKey: string, patch: Partial<Ticket>) {
   const client: DetailApi = {
     activity: vi.fn().mockResolvedValue([]),
-    diff: vi.fn().mockResolvedValue({ files: [] }),
+    diff: vi.fn().mockResolvedValue({ files: [], diff_hash: HASH }),
     report: vi.fn().mockResolvedValue({ full_report_md: null, body: "" }),
     launch: vi.fn().mockResolvedValue(undefined),
     proposeMemory: vi.fn().mockResolvedValue(true),
@@ -28,6 +31,9 @@ function setup(boardKey: string, patch: Partial<Ticket>) {
     paneTail: vi.fn().mockResolvedValue(undefined),
     ship: vi.fn().mockResolvedValue(true),
     resolveNoCode: vi.fn().mockResolvedValue(true),
+    setReviewComments: vi.fn().mockResolvedValue(true),
+    approveReview: vi.fn().mockResolvedValue(true),
+    requestChanges: vi.fn().mockResolvedValue(true),
     refine: vi.fn().mockResolvedValue(true),
     setTaskDone: vi.fn().mockResolvedValue(true),
   };
@@ -60,12 +66,37 @@ describe("ship footer", () => {
     expect(client.ship).toHaveBeenCalledWith("⇡ Open PR", board.key, ticket.nn, "open_pr");
   });
 
-  it("forge=none offers ⇡ Push via SSH and never a PR", () => {
-    const { client, board, ticket } = setup(NO_FORGE, { col: "human" });
+  it("forge=none offers ⇡ Push via SSH and never a PR", async () => {
+    const { client, board, ticket } = setup(NO_FORGE, { col: "human", human_review: APPROVED });
     expect(board.policy.forge).toBe("none");
     expect(buttons().join(" ")).not.toMatch(/Open PR|Merge/);
-    fireEvent.click(within(footer()).getByRole("button", { name: /Push via SSH/ }));
+    const push = within(footer()).getByRole("button", { name: /Push via SSH/ });
+    await waitFor(() => expect(push).toBeEnabled());
+    fireEvent.click(push);
     expect(client.ship).toHaveBeenCalledWith("⇡ Push via SSH", board.key, ticket.nn, "ssh_push");
+  });
+
+  it("require_human_before_pr: ship is disabled without an approval of the current diff", async () => {
+    const { client, board } = setup(NO_FORGE, { col: "human" });
+    expect(board.policy.require_human_before_pr).toBe(true);
+    const push = within(footer()).getByRole("button", { name: /Push via SSH/ });
+    expect(push).toBeDisabled();
+    expect(await within(footer()).findByText(/approve the diff in the Review tab/i)).toBeInTheDocument();
+    fireEvent.click(push);
+    expect(client.ship).not.toHaveBeenCalled();
+  });
+
+  it("require_human_before_pr: an approval of an older diff is void, and says so", async () => {
+    setup(NO_FORGE, { col: "human", human_review: { ...APPROVED, diff_hash: "sha256:old" } });
+    expect(await within(footer()).findByText(/changed since approval/)).toBeInTheDocument();
+    expect(within(footer()).getByRole("button", { name: /Push via SSH/ })).toBeDisabled();
+  });
+
+  it("without require_human_before_pr, review is optional: ship needs no approval or diff", () => {
+    const { client, board } = setup(GITHUB, { col: "human" });
+    expect(board.policy.require_human_before_pr).toBe(false);
+    expect(within(footer()).getByRole("button", { name: /Open PR/ })).toBeEnabled();
+    expect(client.diff).not.toHaveBeenCalled();
   });
 
   it("pr: ✓ Merge and Verify, with the PR's gates", () => {

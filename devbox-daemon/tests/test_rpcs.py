@@ -452,6 +452,11 @@ def ship(nn="05", **extra):
     return {"board_key": KEY, "nn": nn, **extra}
 
 
+# Review optional: open_pr / ssh_push without a human approval (test_review.py
+# has the require_human_before_pr gate).
+UNGATED = {"policy.json": {"require_human_before_pr": False}}
+
+
 @pytest.mark.parametrize(
     ("method", "col", "params", "argv"),
     [
@@ -466,7 +471,9 @@ def ship(nn="05", **extra):
 def test_each_ship_verb_runs_its_tk_sh_call_from_the_main_checkout(
     box, cert, method, col, params, argv
 ):
-    board = box.board("alpha", "b", [row("05", col, landed="yes:ancestry")])
+    board = box.board(
+        "alpha", "b", [row("05", col, landed="yes:ancestry")], files=UNGATED
+    )
 
     async def scenario():
         async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
@@ -502,7 +509,7 @@ def test_a_ship_verb_re_checks_the_column_right_before(box, cert, method, col):
 
 
 def test_a_ship_verb_waits_for_the_boards_flock(box, cert):
-    board = box.board("alpha", "b", [row("05", "human")])
+    board = box.board("alpha", "b", [row("05", "human")], files=UNGATED)
 
     async def scenario():
         async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
@@ -681,7 +688,7 @@ def test_a_stop_while_ship_verbs_wait_never_runs_them(box, cert):
 
 
 def test_exit_5_on_a_pr_reaches_the_reason(box, cert):
-    board = box.board("alpha", "b", [row("05", "human")])
+    board = box.board("alpha", "b", [row("05", "human")], files=UNGATED)
     (board / "pr-exit").write_text("5")
 
     async def scenario():

@@ -20,6 +20,7 @@ import type {
   HubSettings,
   PolicyEdit,
   ReportResponse,
+  ReviewComment,
   SchedulerEntry,
   SentRpc,
   TicketType,
@@ -218,6 +219,18 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     async resolveNoCode(boardKey: string, nn: string, reason: string): Promise<boolean> {
       if (!reason.trim()) return false;
       return (await ticketAction("Resolve", boardKey, nn, "resolve_nocode", { reason: reason.trim() })) !== null;
+    },
+    /** Replaces the ticket's draft review comments in its box's hub-meta; they come back with the board's next snapshot. */
+    async setReviewComments(boardKey: string, nn: string, comments: ReviewComment[]): Promise<boolean> {
+      return (await ticketAction("Comment", boardKey, nn, "set_review_comments", { comments })) !== null;
+    },
+    /** Approve: records the approval of the diff as loaded (`diff_hash`); the daemon refuses it if the diff moved on. */
+    async approveReview(boardKey: string, nn: string, diffHash: string): Promise<boolean> {
+      return (await ticketAction("Approve", boardKey, nn, "approve_review", { diff_hash: diffHash })) !== null;
+    },
+    /** Request changes: the draft comments to the agent as one tk.sh say; the draft clears once it has them. */
+    async requestChanges(boardKey: string, nn: string): Promise<boolean> {
+      return (await ticketAction("Request changes", boardKey, nn, "request_changes", {})) !== null;
     },
     /** One poll of the agent's pane; its lines arrive as a pane_tail rpc_result. Rejects when not sent. */
     async paneTail(boardKey: string, nn: string, lines: number): Promise<void> {

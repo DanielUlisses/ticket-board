@@ -72,3 +72,88 @@
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
+
+/* The hub review bar: approval status, the draft comments, Request changes / Approve. */
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.approval {
+  margin: 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.drafts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.drafts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+}
+.draftText {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.button {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.commentText {
+  font: inherit;
+  font-size: 12.5px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.comment {
+  margin: 0;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* tap a line to comment on it */
+.diff[data-commentable] :global(.diff-code) {
+  cursor: pointer;
+}

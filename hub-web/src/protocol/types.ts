@@ -74,6 +74,24 @@ export interface Ticket {
   synthesis_error?: string | null;
   /** The ticket's worktree on its box; empty before launch. The Review tab needs one. */
   worktree?: string;
+  /** The draft line comments of the hub review (hub-meta); absent: none. */
+  review_comments?: ReviewComment[];
+  /** The last hub approval; void when its diff_hash is not the diff's current one. */
+  human_review?: HumanReview | null;
+}
+
+/** `$defs/review_comment`: one draft line comment; `line` is the new file's line (the old one's on a removed line). */
+export interface ReviewComment {
+  file: string;
+  line: number;
+  text: string;
+}
+
+/** `$defs/human_review`. */
+export interface HumanReview {
+  approved: boolean;
+  diff_hash: string;
+  at: Timestamp;
 }
 
 /** `$defs/policy` (subset): `tk.sh policy <board>`, resolved. */
@@ -285,11 +303,22 @@ export interface ReportResponse {
 }
 
 /** One `ticket_moved` row of the activity endpoint (the hub's log). */
-export interface ActivityEvent {
+export interface ActivityMove {
+  type?: "ticket_moved";
   from: Column;
   to: Column;
   at: Timestamp;
 }
+
+/** `$defs/changes_requested`: a review round, Request changes delivered to the agent. */
+export interface ActivityRound {
+  type: "changes_requested";
+  comments: number;
+  at: Timestamp;
+}
+
+/** One row of the activity endpoint: a column move or a review round. */
+export type ActivityEvent = ActivityMove | ActivityRound;
 
 /** `GET /api/boards/{board_key}/tickets/{nn}/activity` (`$defs/rest_activity`), oldest first. */
 export interface ActivityResponse {

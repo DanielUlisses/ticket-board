@@ -181,3 +181,89 @@ describe("ReviewTab", () => {
     await waitFor(() => expect(within(panel).getByText(/not in ticket 25/)).toBeInTheDocument());
   });
 });
+
+describe("ReviewTab review actions", () => {
+  const NOTE = { file: "src/app.ts", line: 1, text: "Why keep this?" };
+  type Props = Parameters<typeof ReviewTab>[0];
+
+  function setupReview(over: Partial<Props> = {}) {
+    const load = vi.fn(async (_k: string, _nn: string, file?: string) => (file ? fileResponse({}) : LIST));
+    const actions = {
+      setReviewComments: vi.fn().mockResolvedValue(true),
+      approveReview: vi.fn().mockResolvedValue(true),
+      requestChanges: vi.fn().mockResolvedValue(true),
+    };
+    const props: Props = { boardKey: KEY, nn: "25", load: load as unknown as Load, actions, comments: [], approval: null, ...over };
+    const view = render(<ReviewTab {...props} />);
+    return { actions, rerender: (more: Partial<Props>) => view.rerender(<ReviewTab {...props} {...more} />) };
+  }
+
+  async function openApp() {
+    fireEvent.click(await screen.findByRole("button", { name: /src\/app\.ts/ }));
+    return screen.findByText(/^new line/);
+  }
+
+  it("tapping a line adds a draft comment on its file and new line number", async () => {
+    const { actions } = setupReview({ comments: [NOTE] });
+    fireEvent.click(await openApp());
+    const box = screen.getByRole("textbox", { name: "Comment on src/app.ts:2" });
+    fireEvent.change(box, { target: { value: "  Name this better.  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
+    expect(actions.setReviewComments).toHaveBeenCalledWith(KEY, "25", [
+      NOTE,
+      { file: "src/app.ts", line: 2, text: "Name this better." },
+    ]);
+  });
+
+  it("shows the stored draft (it survives a reload) under its line and in the draft list", async () => {
+    setupReview({ comments: [NOTE] });
+    const drafts = await screen.findByRole("list", { name: "Draft comments" });
+    expect(drafts).toHaveTextContent("src/app.ts:1 — Why keep this?");
+    await openApp();
+    const panel = screen.getByRole("region", { name: "src/app.ts" });
+    expect(within(panel).getByText("Why keep this?")).toBeInTheDocument();
+  });
+
+  it("edits and deletes a draft comment", async () => {
+    const { actions } = setupReview({ comments: [NOTE, { file: "b.ts", line: 3, text: "Two" }] });
+    const drafts = await screen.findByRole("list", { name: "Draft comments" });
+    fireEvent.click(within(drafts).getAllByRole("button", { name: "Edit" })[0]);
+    const box = screen.getByRole("textbox", { name: "Comment on src/app.ts:1" });
+    expect(box).toHaveValue("Why keep this?");
+    fireEvent.change(box, { target: { value: "Drop this line." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
+    expect(actions.setReviewComments).toHaveBeenLastCalledWith(KEY, "25", [
+      { ...NOTE, text: "Drop this line." },
+      { file: "b.ts", line: 3, text: "Two" },
+    ]);
+    fireEvent.click(within(drafts).getAllByRole("button", { name: "Delete" })[1]);
+    expect(actions.setReviewComments).toHaveBeenLastCalledWith(KEY, "25", [{ ...NOTE, text: "Drop this line." }]);
+  });
+
+  it("Request changes sends the draft, and is disabled without one", async () => {
+    const { actions, rerender } = setupReview();
+    const button = await screen.findByRole("button", { name: /Request changes/ });
+    expect(button).toBeDisabled();
+    rerender({ comments: [NOTE] });
+    expect(button).toHaveTextContent("Request changes (1)");
+    fireEvent.click(button);
+    expect(actions.requestChanges).toHaveBeenCalledWith(KEY, "25");
+  });
+
+  it("Approve records the diff as loaded; a later diff change shows the approval as void", async () => {
+    const { actions, rerender } = setupReview();
+    const approve = await screen.findByRole("button", { name: "✓ Approve" });
+    await waitFor(() => expect(approve).toBeEnabled()); // the diff_hash is loaded
+    fireEvent.click(approve);
+    expect(actions.approveReview).toHaveBeenCalledWith(KEY, "25", HASH);
+    await waitFor(() => expect(approve).toBeEnabled()); // the hub took it
+
+    rerender({ approval: { approved: true, diff_hash: HASH, at: "2026-10-23T10:00:00Z" } });
+    expect(screen.getByRole("status", { name: "Review status" })).toHaveTextContent(/approved/i);
+    expect(screen.getByRole("button", { name: "✓ Approve" })).toBeDisabled();
+
+    rerender({ approval: { approved: true, diff_hash: "sha256:old", at: "2026-10-23T10:00:00Z" } });
+    expect(screen.getByRole("status", { name: "Review status" })).toHaveTextContent("changed since approval");
+    await waitFor(() => expect(screen.getByRole("button", { name: "✓ Approve" })).toBeEnabled());
+  });
+});

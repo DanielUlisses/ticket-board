@@ -59,6 +59,13 @@ limits). Untracked files are read and hashed directly in chunks, within a size a
 total budget, past which they are fingerprinted by stat only; an untracked nested repo is listed as a `nested_repo`
 stub whose hash carries its HEAD. pane_tail returns the lines in
 data.pane and, being read-only, is not followed by a re-export.
+Human review: set_review_comments replaces the ticket's draft (`review_comments`
+in hub-meta); request_changes sends it as one tk.sh say (`<file>:<line> — <text>`
+under a header), clearing it once delivered; approve_review records
+`human_review` {approved, diff_hash, at}, refused when the diff_hash it was sent is
+not the diff's current one. Under the resolved policy's require_human_before_pr,
+open_pr / ssh_push are refused (under the flock, after the column re-check)
+unless that approval matches the diff_hash as it is now.
 Synthesis (agy_runner.py): a ticket that moves into needs, human or pr between two
 exports (never one seen for the first time), and refine_with_comment, run the board's
 `synthesis.backends` on the ticket; the result lands in the board's hub-meta.json
@@ -98,6 +105,7 @@ import tempfile
 import threading
 import time
 import typing
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -667,6 +675,17 @@ def update_ticket_meta(board: Path, nn: str, fields: dict):
     write_meta(board, meta)
 
 
+def review_message(comments: list[dict]) -> str:
+    """Request changes' one message: a short header, then `<file>:<line> — <text>`
+    per comment, by file and line."""
+    lines = [
+        f"{c['file']}:{c['line']} — {c['text'].strip()}"
+        for c in sorted(comments, key=lambda c: (c["file"], c["line"]))
+    ]
+    n = f"{len(lines)} comment{'' if len(lines) == 1 else 's'}"
+    return f"Changes requested in the hub review ({n}):\n\n" + "\n".join(lines) + "\n"
+
+
 def synthesis_policy(board: dict) -> dict:
     """The board's resolved `synthesis` policy; {} when it, or the policy, is missing,
     null or not an object."""
@@ -765,6 +784,9 @@ class Daemon:
             "verify_landed": self.rpc_verify_landed,
             "get_diff": self.rpc_get_diff,
             "sync_box": self.rpc_sync_box,
+            "set_review_comments": self.rpc_set_review_comments,
+            "request_changes": self.rpc_request_changes,
+            "approve_review": self.rpc_approve_review,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -1110,10 +1132,12 @@ class Daemon:
         cols: tuple[str, ...] | None,
         *args: str,
         landed: bool = False,
+        check: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[int, str]:
         """tk.sh <args> under the board's queue and flock, after re-checking the
-        ticket is in one of `cols` (any when None) and, with `landed`, that its
-        landed verdict is yes:*. The work runs in a task of
+        ticket is in one of `cols` (any when None), with `landed` that its
+        landed verdict is yes:*, and awaiting `check` (it raises RpcRefused to
+        refuse). The work runs in a task of
         its own: the rpc timeout answers the hub but never kills a merge midway."""
 
         async def work() -> tuple[int, str]:
@@ -1139,6 +1163,8 @@ class Daemon:
                         raise RpcRefused(
                             f"ticket {nn} is not landed (landed: {found.get('landed')})"
                         )
+                    if check is not None:
+                        await check()
                     return await self.tk(board, *args)
                 finally:
                     lock.close()
@@ -1166,9 +1192,13 @@ class Daemon:
             if not reason:
                 raise RpcRefused("resolve without code needs a reason")
             extra = ["--no-code", reason]
-        rc, out = await self.locked_tk(
-            board, nn, cols, verb, nn, *extra, landed=method == "resolve_ticket"
+        gated = method in ("open_pr", "ssh_push") and bool(
+            (board.get("policy") or {}).get("require_human_before_pr")
         )
+        rc, out = await self.locked_tk(
+            board, nn, cols, verb, nn, *extra, landed=method == "resolve_ticket",
+            check=functools.partial(self.check_approval, board, nn) if gated else None,
+        )  # fmt: skip
         result = {"ok": rc == 0, "exit_code": rc, "output_tail": out}
         if method == "merge_pr":
             merged = any(line.startswith("MERGED ") for line in out.splitlines())
@@ -1203,13 +1233,15 @@ class Daemon:
         return {"ok": rc == 0, "exit_code": rc, "output_tail": out, "data": data}
 
     async def rpc_say_agent(self, ws, params: dict) -> dict:
+        return await self.say(self.board(params), params["nn"], params["message"])
+
+    async def say(self, board: dict, nn: str, message: str) -> dict:
         """tk.sh say, the message passed as a file (deleted after)."""
-        board = self.board(params)
         fd, path = tempfile.mkstemp(prefix="tk-say-", suffix=".md")
         try:
             with os.fdopen(fd, "w") as f:
-                f.write(params["message"])
-            rc, out = await self.tk(board, "say", params["nn"], path)
+                f.write(message)
+            rc, out = await self.tk(board, "say", nn, path)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(path)
@@ -1747,6 +1779,74 @@ class Daemon:
             "exit_code": 0,
             "output_tail": f"#{ticket['nn']} {text}: {tick}",
         }
+
+    # ---- human review ----------------------------------------------------------------
+    async def rpc_set_review_comments(self, ws, params: dict) -> dict:
+        """Replaces the ticket's draft line comments (`review_comments`) in hub-meta."""
+        board, ticket = self.board_ticket(params)
+        comments = params["comments"]
+        update_ticket_meta(
+            Path(board["board_path"]), ticket["nn"], {"review_comments": comments}
+        )
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "output_tail": f"#{ticket['nn']}: {len(comments)} draft comment(s)",
+        }
+
+    async def diff_hash(self, board: dict, nn: str) -> str:
+        """The ticket's diff_hash now, as get_diff computes it."""
+        listing = await self.rpc_get_diff(None, {"board_key": board["key"], "nn": nn})
+        return listing["data"]["diff_hash"]
+
+    async def check_approval(self, board: dict, nn: str):
+        """require_human_before_pr: refuses unless hub-meta holds an approval of the
+        ticket's diff as it is now (any change since voids it)."""
+        review = ticket_meta(read_meta(Path(board["board_path"])), nn).get(
+            "human_review"
+        )
+        if not isinstance(review, dict) or review.get("approved") is not True:
+            raise RpcRefused(
+                f"require_human_before_pr: approve #{nn}'s diff in the hub review first"
+            )
+        if await self.diff_hash(board, nn) != review.get("diff_hash"):
+            raise RpcRefused(
+                f"require_human_before_pr: #{nn}'s diff changed since its approval;"
+                " review it again"
+            )
+
+    async def rpc_approve_review(self, ws, params: dict) -> dict:
+        """Records `human_review` {approved, diff_hash, at} in hub-meta, for the diff
+        the developer saw: refused when the diff has changed since."""
+        board, ticket = self.board_ticket(params)
+        nn, seen = ticket["nn"], params["diff_hash"]
+        if await self.diff_hash(board, nn) != seen:
+            raise RpcRefused(
+                f"the diff of #{nn} changed since it was loaded: review it again"
+            )
+        review = {"approved": True, "diff_hash": seen, "at": utc_now()}
+        update_ticket_meta(Path(board["board_path"]), nn, {"human_review": review})
+        return {"ok": True, "exit_code": 0, "output_tail": f"#{nn} approved at {seen}"}
+
+    async def rpc_request_changes(self, ws, params: dict) -> dict:
+        """The draft comments as one `tk.sh say` (review_message); the draft is
+        cleared once the agent has it, kept when tk.sh did not deliver it. The
+        hub logs the round from data.comments."""
+        board, ticket = self.board_ticket(params)
+        nn, path = ticket["nn"], Path(board["board_path"])
+        comments = ticket_meta(read_meta(path), nn).get("review_comments") or []
+        if not comments:
+            raise RpcRefused(f"no draft comments to send on #{nn}")
+        result = await self.say(board, nn, review_message(comments))
+        if result["ok"]:
+            # the draft as sent: one written meanwhile is not dropped unsent
+            meta = read_meta(path)
+            entry = ticket_meta(meta, nn)
+            if entry.get("review_comments") == comments:
+                entry["review_comments"] = []
+                write_meta(path, meta)
+            result["data"] = {"comments": len(comments)}
+        return result
 
     # ---- synthesis -----------------------------------------------------------------
     def moves_to_synthesize(self, boards: dict) -> list[tuple[str, str]]:

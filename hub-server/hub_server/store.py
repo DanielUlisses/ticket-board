@@ -40,6 +40,14 @@ CREATE TABLE IF NOT EXISTS activity (
     at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS activity_ticket ON activity (board_key, nn);
+CREATE TABLE IF NOT EXISTS review_rounds (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_key TEXT NOT NULL,
+    nn        TEXT NOT NULL,
+    comments  INTEGER NOT NULL,
+    at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_rounds_ticket ON review_rounds (board_key, nn);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -296,12 +304,27 @@ class Boards:
             (board_key, nn, from_col, to_col, at),
         )
 
+    def log_review_round(self, board_key: str, nn: str, comments: int, at: str):
+        """A Request changes the agent got (its comments sent as one tk.sh say)."""
+        self.db.execute(
+            "INSERT INTO review_rounds (board_key, nn, comments, at)"
+            " VALUES (?, ?, ?, ?)",
+            (board_key, nn, comments, at),
+        )
+
     def activity(self, board_key: str, nn: str) -> list[dict]:
-        rows = self.db.execute(
-            "SELECT * FROM activity WHERE board_key = ? AND nn = ? ORDER BY id",
-            (board_key, nn),
+        """The ticket's column moves and review rounds, oldest first (a move and a
+        round in the same second: the move first)."""
+        where = "WHERE board_key = ? AND nn = ? ORDER BY id"
+        moves = self.db.execute(
+            f"SELECT * FROM activity {where}", (board_key, nn)
         ).fetchall()
-        return [_moved(row) for row in rows]
+        rounds = self.db.execute(
+            f"SELECT * FROM review_rounds {where}", (board_key, nn)
+        ).fetchall()
+        events = [_moved(row) for row in moves] + [_round(row) for row in rounds]
+        # sorted is stable: each kind keeps its own order
+        return sorted(events, key=lambda e: e["at"])
 
 
 def _board(row: sqlite3.Row) -> dict:
@@ -320,5 +343,16 @@ def _moved(row: sqlite3.Row) -> dict:
         "nn": row["nn"],
         "from": row["from_col"],
         "to": row["to_col"],
+        "at": row["at"],
+    }
+
+
+def _round(row: sqlite3.Row) -> dict:
+    """A review_rounds row as a `changes_requested` activity event."""
+    return {
+        "type": "changes_requested",
+        "board_key": row["board_key"],
+        "nn": row["nn"],
+        "comments": row["comments"],
         "at": row["at"],
     }

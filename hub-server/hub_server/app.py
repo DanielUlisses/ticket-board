@@ -547,8 +547,9 @@ def create_app(
 
     @app.post("/api/boards/{board_key:path}/tickets/{nn}/action", status_code=202)
     async def ticket_action(board_key: str, nn: str, request: ActionRequest):
-        """a ticket RPC (launch, say, pane tail, ship verbs) on the board's daemon; the
-        rpc_result arrives on /ws/ui."""
+        """a ticket RPC (launch, say, pane tail, ship verbs, review: draft comments,
+        approve, request changes) on the board's daemon; the rpc_result arrives on
+        /ws/ui (a delivered request_changes is also a round in the activity log)."""
         find_ticket(board_key, nn)
         devbox = hub.store.boards.get(board_key)["devbox"]
         try:

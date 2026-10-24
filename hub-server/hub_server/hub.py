@@ -28,7 +28,7 @@ SYNTHESIS_FIELDS = ("type", "board_key", "nn", "backend", "at", "error")
 TICKET_ACTIONS = (
     "launch_ticket", "say_agent", "pane_tail",
     "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
-    "resolve_ticket",
+    "resolve_ticket", "set_review_comments", "request_changes", "approve_review",
 )  # fmt: skip
 # tk.sh launch --type values (ticket-skill's branch prefixes).
 TICKET_TYPES = ("feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci")
@@ -354,6 +354,14 @@ class Hub:
             if not rpc.waiter.done():
                 rpc.waiter.set_result(result)
             return
+        if rpc.method == "request_changes" and result.get("ok") and rpc.nn:
+            comments = (result.get("data") or {}).get("comments")
+            self.store.boards.log_review_round(
+                rpc.board_key,
+                rpc.nn,
+                comments if isinstance(comments, int) else 0,
+                now(),
+            )
         result = result | {"devbox": rpc.devbox, "method": rpc.method}
         if rpc.board_key is not None:
             result["board_key"] = rpc.board_key

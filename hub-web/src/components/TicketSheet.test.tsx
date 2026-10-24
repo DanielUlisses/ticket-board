@@ -31,6 +31,9 @@ function stubClient(): DetailApi {
     resolveNoCode: async () => true,
     refine: async () => true,
     setTaskDone: async () => true,
+    setReviewComments: async () => true,
+    approveReview: async () => true,
+    requestChanges: async () => true,
   };
 }
 
@@ -50,6 +53,9 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
     paneTail: vi.fn().mockResolvedValue(undefined),
     ship: vi.fn().mockResolvedValue(true),
     resolveNoCode: vi.fn().mockResolvedValue(true),
+    setReviewComments: vi.fn().mockResolvedValue(true),
+    approveReview: vi.fn().mockResolvedValue(true),
+    requestChanges: vi.fn().mockResolvedValue(true),
     ...api,
   };
   const store = createStore();
@@ -199,6 +205,19 @@ describe("TicketSheet", () => {
     expect(await screen.findByText("backlog → working 14:02Z")).toBeInTheDocument();
     expect(screen.getByText("→ review 15:40Z")).toBeInTheDocument();
     expect(client.activity).toHaveBeenCalledWith(KEY, "01");
+  });
+
+  it("shows a Request changes round in the timeline among the moves", async () => {
+    setup([KEY, "01"], {
+      activity: vi.fn().mockResolvedValue([
+        { type: "ticket_moved", from: "working", to: "review", at: "2026-10-23T15:40:00Z" },
+        { type: "changes_requested", comments: 2, at: "2026-10-23T15:52:00Z" },
+        { type: "ticket_moved", from: "review", to: "working", at: "2026-10-23T15:53:00Z" },
+      ]),
+    });
+    expect(await screen.findByText("working → review 15:40Z")).toBeInTheDocument();
+    expect(screen.getByText("changes requested (2 comments) 15:52Z")).toBeInTheDocument();
+    expect(screen.getByText("→ working 15:53Z")).toBeInTheDocument();
   });
 
   it("has an agent pane", () => {

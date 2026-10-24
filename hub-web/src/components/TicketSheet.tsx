@@ -16,7 +16,7 @@ import styles from "./TicketSheet.module.css";
 export { PANE_MS } from "./PaneTail";
 
 /** The hub calls the sheet makes. */
-export type DetailApi = Pick<HubClient, "activity" | "diff" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone" | "ship" | "resolveNoCode">;
+export type DetailApi = Pick<HubClient, "activity" | "diff" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone" | "ship" | "resolveNoCode" | "setReviewComments" | "approveReview" | "requestChanges">;
 
 /** Columns where the ticket has an agent: relay to it, tail its pane. */
 const WITH_AGENT: ReadonlySet<Column> = new Set(["needs", "working", "review", "human"]);
@@ -61,9 +61,12 @@ export const REFINE_START_MS = 15000;
  */
 export const TICK_CONFIRM_MS = 15000;
 
-/** `backlog → working 14:02`, then `→ review 15:40` for the moves after the first. */
+/** `backlog → working 14:02`, then `→ review 15:40` for the moves after the first; a review round as `changes requested (2 comments) 15:52`. */
 function timelineText(e: ActivityEvent, first: boolean): string {
-  return `${first ? `${e.from} ` : ""}→ ${e.to} ${e.at.slice(11, 16)}Z`;
+  const at = `${e.at.slice(11, 16)}Z`;
+  if (e.type === "changes_requested")
+    return `changes requested (${e.comments} comment${e.comments === 1 ? "" : "s"}) ${at}`;
+  return `${first ? `${e.from} ` : ""}→ ${e.to} ${at}`;
 }
 
 /** The repo's project memory as list items (numbered or bulleted lines); read-only. */
@@ -110,7 +113,9 @@ function ProposeMemory({ board, ticket, api }: { board: Board; ticket: Ticket; a
 function Timeline({ board, ticket, api }: { board: Board; ticket: Ticket; api: DetailApi }) {
   const [events, setEvents] = useState<ActivityEvent[] | null>(null);
   const [failed, setFailed] = useState(false);
-  // A column change in the store means a new row in the log.
+  // A column change in the store means a new row in the log; so does a draft
+  // cleared by Request changes (the round is logged before that snapshot).
+  const drafts = ticket.review_comments?.length ?? 0;
   useEffect(() => {
     let live = true;
     api.activity(board.key, ticket.nn).then(
@@ -120,14 +125,14 @@ function Timeline({ board, ticket, api }: { board: Board; ticket: Ticket; api: D
     return () => {
       live = false;
     };
-  }, [api, board.key, ticket.nn, ticket.col]);
+  }, [api, board.key, ticket.nn, ticket.col, drafts]);
   if (failed) return <p className={styles.muted}>Activity unavailable.</p>;
   if (!events) return <p className={styles.muted}>Loading...</p>;
   if (events.length === 0) return <p className={styles.muted}>No moves recorded.</p>;
   return (
     <ol className={styles.timeline}>
       {events.map((e, i) => (
-        <li key={i}>{timelineText(e, i === 0)}</li>
+        <li key={i}>{timelineText(e, i === events.findIndex((x) => x.type !== "changes_requested"))}</li>
       ))}
     </ol>
   );
@@ -343,7 +348,14 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
             id={`${tabsId}-panel-review`}
             aria-labelledby={`${tabsId}-tab-review`}
           >
-            <ReviewTab boardKey={board.key} nn={ticket.nn} load={api.diff} />
+            <ReviewTab
+              boardKey={board.key}
+              nn={ticket.nn}
+              load={api.diff}
+              actions={api}
+              comments={ticket.review_comments}
+              approval={ticket.human_review ?? null}
+            />
           </div>
         ) : (
         <div

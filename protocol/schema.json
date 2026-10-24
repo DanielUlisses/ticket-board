@@ -688,6 +688,19 @@
         "at": { "$ref": "#/$defs/timestamp" }
       }
     },
+    "changes_requested": {
+      "description": "A review round in the activity log: Request changes sent the ticket's draft comments to its agent as one tk.sh say (the hub records it on that rpc_result's ok).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "board_key", "nn", "comments", "at"],
+      "properties": {
+        "type": { "const": "changes_requested" },
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "comments": { "description": "How many comments the message carried.", "type": "integer", "minimum": 0 },
+        "at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
     "synthesis_event": {
       "description": "synthesis_started / synthesis_finished, daemon -> hub -> UI. nn null: the board brief. backend: the backend about to run (started) or that produced the result (finished).",
       "type": "object",
@@ -840,14 +853,14 @@
       }
     },
     "rest_activity": {
-      "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/activity. The ticket's column moves, oldest first.",
+      "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/activity. The ticket's column moves and review rounds, oldest first.",
       "type": "object",
       "additionalProperties": false,
       "required": ["board_key", "nn", "events"],
       "properties": {
         "board_key": { "$ref": "#/$defs/board_key" },
         "nn": { "$ref": "#/$defs/nn" },
-        "events": { "type": "array", "items": { "$ref": "#/$defs/ticket_moved" } }
+        "events": { "type": "array", "items": { "oneOf": [{ "$ref": "#/$defs/ticket_moved" }, { "$ref": "#/$defs/changes_requested" }] } }
       }
     },
     "rest_scan": {

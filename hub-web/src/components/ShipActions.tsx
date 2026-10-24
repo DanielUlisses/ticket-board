@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { HubClient, ShipMethod } from "../api/client";
 import type { Board, Pr, RpcResult, Ticket } from "../protocol/types";
 import styles from "./Actions.module.css";
@@ -6,7 +6,36 @@ import { Spinner } from "./Spinner";
 import { ticketId } from "../store/store";
 import { useView } from "./StoreContext";
 
-export type ShipApi = Pick<HubClient, "ship" | "resolveNoCode">;
+export type ShipApi = Pick<HubClient, "ship" | "resolveNoCode" | "diff">;
+
+/**
+ * require_human_before_pr: why ⇡ Open PR / ⇡ Push via SSH are held, or null when
+ * they are not (no flag, or an approval of the diff as it is now). The diff's
+ * hash is fetched while the gate applies; the daemon refuses on its own as well.
+ */
+function useApprovalGate(board: Board, ticket: Ticket, api: ShipApi): string | null {
+  const gated = ticket.col === "human" && board.policy.require_human_before_pr;
+  const approved = ticket.human_review?.approved ? ticket.human_review.diff_hash : null;
+  const [current, setCurrent] = useState<{ hash: string | null; error?: string } | null>(null);
+  useEffect(() => {
+    if (!gated) return;
+    let live = true;
+    setCurrent(null);
+    api.diff(board.key, ticket.nn).then(
+      (r) => live && setCurrent({ hash: r.diff_hash }),
+      (e: Error) => live && setCurrent({ hash: null, error: e.message }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [gated, api, board.key, ticket.nn, approved]);
+  if (!gated) return null;
+  if (!approved) return "Needs your review: approve the diff in the Review tab first (require_human_before_pr).";
+  if (!current) return "Checking the approval against the diff...";
+  if (current.error) return `Cannot check the approval: ${current.error}`;
+  if (current.hash !== approved) return "The diff changed since approval: review it again in the Review tab.";
+  return null;
+}
 
 /** One merge gate (tk.sh run_gates): its name, pass/fail and what tk.sh said. */
 export interface Gate {
@@ -127,11 +156,12 @@ function Resolve({ label, pending, onResolve }: {
 
 /**
  * The ship footer: human → ⇡ Open PR (forge github|azure) or ⇡ Push via SSH (forge
- * none: never a PR); pr → ✓ Merge with its gates, Verify; done and landed → Resolve (plain);
+ * none: never a PR), held under require_human_before_pr until the current diff is approved; pr → ✓ Merge with its gates, Verify; done and landed → Resolve (plain);
  * needs, review, human, pr → Resolve without code. Null where it has nothing.
  */
 export function ShipActions({ board, ticket, api }: { board: Board; ticket: Ticket; api: ShipApi }) {
   const { pending, ship } = useView();
+  const held = useApprovalGate(board, ticket, api);
   const waiting = (method: string) =>
     pending.some((p) => p.method === method && p.board_key === board.key && p.nn === ticket.nn);
   const last = ship[ticketId(board.key, ticket.nn)];
@@ -163,13 +193,18 @@ export function ShipActions({ board, ticket, api }: { board: Board; ticket: Tick
     const label = none ? "⇡ Push via SSH" : "⇡ Open PR";
     return (
       <div className={styles.relay}>
+        {held && (
+          <p className={styles.muted} aria-label="Approval">
+            {held}
+          </p>
+        )}
         <div className={styles.row}>
           {resolve}
           <button
             type="button"
             className={styles.primary}
             data-primary="true"
-            disabled={waiting(method)}
+            disabled={waiting(method) || held !== null}
             aria-busy={waiting(method)}
             onClick={send(label, method)}
           >
