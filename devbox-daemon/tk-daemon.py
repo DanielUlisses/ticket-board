@@ -60,8 +60,11 @@ total budget, past which they are fingerprinted by stat only; an untracked neste
 stub whose hash carries its HEAD. pane_tail returns the lines in
 data.pane and, being read-only, is not followed by a re-export.
 Synthesis (agy_runner.py): a ticket that moves into needs, human or pr between two
-exports (never one seen for the first time), and refine_with_comment, run the board's
-`synthesis.backends` on the ticket; the result lands in the board's hub-meta.json
+exports, a catch-up after every export (a ticket in needs, human or pr with no synthesis
+yet, or new on a board this daemon already exported, in any column but done), and
+refine_with_comment, run the board's `synthesis.backends` on the ticket; done and failed
+tickets are never retried automatically, runs from moves and catch-ups queue one at a
+time per box, refine_with_comment runs outside that queue; the result lands in the board's hub-meta.json
 (`tickets.<NN>`; the file as it was before the run in hub-meta.prev.json), a failure
 keeps the last good content with `synthesis_status: failed`. The hub hears
 synthesis_started / synthesis_finished / synthesis_failed. One run per ticket at a time.
@@ -732,7 +735,9 @@ class Daemon:
         self.lock = asyncio.Lock()
         self.ws = None  # the hub connection, while there is one (synthesis events)
         self.synthesizing: set[tuple[str, str]] = set()  # (board key, nn) running now
-        self.synth_tasks: set[asyncio.Task] = set()  # runs started by a column move
+        self.synth_tasks: set[asyncio.Task] = set()  # queued runs: moves and catch-ups
+        self.synth_lock = asyncio.Lock()  # queued runs go one at a time per box
+        self.synth_queued: set[tuple[str, str]] = set()  # waiting for synth_lock
         self.brief_dirty: set[str] = set()  # moved while its brief was running
         self.briefing: set[str] = set()  # board keys with a brief running now
         self.brief_timers: dict[str, asyncio.Task] = {}  # debounce, per board key
@@ -892,8 +897,8 @@ class Daemon:
             self.sent, self.health = boards, snap["health"]
             self.expire_reservations()
             self.need_full = want_full and not full
-            for key, nn in moved:
-                self.spawn_synthesis(key, nn)
+            for key, nn, catch_up in moved:
+                self.spawn_synthesis(key, nn, catch_up)
             return len(boards), removed, held
         finally:
             self.lock.release()
@@ -1749,23 +1754,30 @@ class Daemon:
         }
 
     # ---- synthesis -----------------------------------------------------------------
-    def moves_to_synthesize(self, boards: dict) -> list[tuple[str, str]]:
-        """(key, nn) of each ticket whose col moved into needs/human/pr since the last
-        export; a board or ticket seen for the first time has not moved, an archived
-        board is left alone."""
-        moved = []
+    def moves_to_synthesize(self, boards: dict) -> list[tuple[str, str, bool]]:
+        """(key, nn, catch_up) of each ticket to synthesize after an export: one whose col moved
+        into needs/human/pr since the last export, or a catch-up: no synthesis yet
+        (status none) and in needs/human/pr, or new on a board already exported in this
+        run (any column but done). On a board's first export only the needs/human/pr
+        catch-up applies, so the backlog is not all queued. done, failed and archived
+        boards are left alone. catch_up is False for a move."""
+        found = []
         for key, b in boards.items():
-            old = self.sent.get(key)
-            if old is None or b["hub_meta"].get("archived"):
+            if b["hub_meta"].get("archived"):
                 continue
-            before = {t["nn"]: t["col"] for t in old["tickets"]}
-            moved += [
-                (key, t["nn"])
-                for t in b["tickets"]
-                if t["col"] in SYNTHESIS_COLUMNS
-                and before.get(t["nn"], t["col"]) != t["col"]
-            ]
-        return moved
+            old = self.sent.get(key)
+            before = {t["nn"]: t["col"] for t in old["tickets"]} if old else None
+            for t in b["tickets"]:
+                col = t["col"]
+                moved = (before is not None and col in SYNTHESIS_COLUMNS
+                         and before.get(t["nn"], col) != col)  # fmt: skip
+                new = before is not None and t["nn"] not in before
+                catch_up = t.get("synthesis_status") == "none" and (
+                    col in SYNTHESIS_COLUMNS or (new and col != "done")
+                )
+                if moved or catch_up:
+                    found.append((key, t["nn"], not moved))
+        return found
 
     def boards_that_moved(self, boards: dict) -> list[str]:
         """Keys of the boards where a known ticket changed column since the last
@@ -1854,11 +1866,37 @@ class Daemon:
                 found = True
         return found
 
-    def spawn_synthesis(self, key: str, nn: str):
+    def still_wanted(self, key: str, nn: str, catch_up: bool) -> bool:
+        """Whether a queued run is still due once it has the lock: the ticket is not in
+        done, its board not archived; a catch-up also needs its status in hub-meta
+        (read now: RPC runs do not sync) still missing or none."""
+        board = self.sent.get(key)
+        if board is None or board["hub_meta"].get("archived"):
+            return False
+        ticket = next((t for t in board["tickets"] if t["nn"] == nn), None)
+        if ticket is None or ticket["col"] == "done":
+            return False
+        if not catch_up:
+            return True
+        try:
+            entry = ticket_meta(read_meta(Path(board["board_path"])), nn)
+        except (OSError, ValueError):
+            return False  # unreadable hub-meta: do not retry blind
+        return entry.get("synthesis_status", "none") == "none"
+
+    def spawn_synthesis(self, key: str, nn: str, catch_up: bool = False):
+        if (key, nn) in self.synth_queued or (key, nn) in self.synthesizing:
+            return  # already waiting or running: the export that found it again is moot
+        self.synth_queued.add((key, nn))
+
         async def run():
-            board, ticket = self.board_ticket({"board_key": key, "nn": nn})
-            with contextlib.suppress(agy_runner.SynthesisFailed):
-                await self.synthesize(board, ticket, "")
+            async with self.synth_lock:  # one run at a time per box
+                self.synth_queued.discard((key, nn))
+                if not self.still_wanted(key, nn, catch_up):
+                    return
+                board, ticket = self.board_ticket({"board_key": key, "nn": nn})
+                with contextlib.suppress(agy_runner.SynthesisFailed):
+                    await self.synthesize(board, ticket, "")
             if self.ws is not None:  # the hub sees the result now, not next tick
                 await self.sync(self.ws, full=False)
 
@@ -1867,6 +1905,8 @@ class Daemon:
                 await run()
             except Exception as e:  # noqa: BLE001 — logged; the next move tries again
                 log.warning("synthesis of %s #%s: %s: %s", key, nn, type(e).__name__, e)
+            finally:
+                self.synth_queued.discard((key, nn))
 
         task = asyncio.create_task(guarded())
         self.synth_tasks.add(task)
