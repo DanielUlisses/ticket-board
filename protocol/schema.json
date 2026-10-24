@@ -357,6 +357,7 @@
         "board_path": { "type": "string" },
         "board_md": { "type": ["string", "null"] },
         "retro_results_md": { "type": ["string", "null"] },
+        "retro_proposals_md": { "description": "Contents of <board>/retro/proposals.md (what tk.sh retro-save wrote, with its **Mark:** lines), added by the daemon's export; null before a retro.", "type": ["string", "null"] },
         "project_memory": { "description": "Contents of <root>/docs/agents/project-memory.md, or null.", "type": ["string", "null"] },
         "hub_meta": { "$ref": "#/$defs/hub_meta" },
         "policy": { "$ref": "#/$defs/policy" },
@@ -960,6 +961,17 @@
     "rest_propose_memory": {
       "description": "REST: POST /api/boards/{key}/memory, body {text} -> 202, one propose_memory rpc to the board's devbox; the daemon appends a project-memory ticket to the board (the hub never writes project-memory.md). 404 unknown board or devbox offline, 422 empty text (see rest_error).",
       "$ref": "#/$defs/rest_set_policy"
+    },
+    "rest_board_rpc": {
+      "description": "REST: POST /api/boards/{key}/retro (run_retro), /retro/apply (body {mark, ids}: retro_apply) and /sweep (sweep_board) -> 200 once the daemon has answered (a long wait for retro), the result to this caller only, not /ws/ui. `data` is the daemon's: proposals_md and results_md (retro, retro-apply: the saved proposals and retro-results.md, null when absent), or removed [{kind, ref}] and skipped [{kind, ref, reason}] (sweep). Errors (rest_error): 404 unknown board, 409 devbox offline or the daemon refused (retro before every ticket is done), 504 timed out, 502 the run failed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "output_tail", "data"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "output_tail": { "type": "string" },
+        "data": { "type": "object" }
+      }
     },
     "rest_set_policy": {
       "description": "REST: POST /api/boards/{key}/policy (body {values}: the board-override keys to change, as in params_set_policy) -> 202. One set_policy rpc to the board's devbox; its rpc_result arrives on /ws/ui, the new resolved policy in the board's next snapshot.",

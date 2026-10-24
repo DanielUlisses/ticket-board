@@ -8,6 +8,7 @@
 # as `tk.sh boards` lists it, exported with `tk.sh export <path>` — both run from
 # the main checkout. Each board is merged with:
 #   project_memory  <root>/docs/agents/project-memory.md (read only, never written)
+#   retro_proposals_md  .scratch/<board>/retro/proposals.md (what `tk.sh retro-save` wrote), or null
 #   hub_meta        .scratch/<board>/hub-meta.json; its `tickets.<NN>` objects are
 #                   merged into those tickets instead
 #   policy          `tk.sh policy <path>` when `tk.sh help` lists that verb (an error
@@ -163,12 +164,14 @@ export_board() {  # <root> <board_path> -> one board object on stdout
        else "default" end)}) | add' "$TMP/policy.json" >"$TMP/policy-sources.json" || return 1
   read_obj_strict "$path/hub-meta.json" >"$TMP/meta.json" || return 1
   read_text "$root/docs/agents/project-memory.md" >"$TMP/memory.json"
+  read_text "$path/retro/proposals.md" >"$TMP/proposals.json"
   b="$(jq -cS --arg devbox "$DEVBOX" --slurpfile policy "$TMP/policy.json" \
         --slurpfile psrc "$TMP/policy-sources.json" \
-        --slurpfile meta "$TMP/meta.json" --slurpfile memory "$TMP/memory.json" '
+        --slurpfile meta "$TMP/meta.json" --slurpfile memory "$TMP/memory.json" \
+        --slurpfile proposals "$TMP/proposals.json" '
     ($meta[0].tickets // {}) as $mt
     | . + {key: "\($devbox)/\(.repo)/\(.slug)", devbox: $devbox,
-           project_memory: $memory[0],
+           project_memory: $memory[0], retro_proposals_md: $proposals[0],
            hub_meta: ({archived: false, board_brief: null} + ($meta[0] | del(.tickets))),
            policy: $policy[0], policy_sources: $psrc[0],
            tickets: [.tickets[] | {summary: null, reviewer_notes: null, full_report_md: null,

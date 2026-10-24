@@ -462,7 +462,7 @@ def test_rpcs_outside_the_daemons_list_are_rejected_without_running_anything(box
             await hub.next("snapshot")
             calls = len(box.tk_calls())
             await hub.send(
-                {"type": "rpc", "id": "r-2", "method": "sweep_board", "params": {}}
+                {"type": "rpc", "id": "r-2", "method": "sweep_all", "params": {}}
             )
             await hub.ws.send(
                 json.dumps(
