@@ -17,9 +17,8 @@ devbox-daemon/       tk-export.sh, tk-daemon.py, agy_runner.py; runtime deps: we
 hub-web/             Vite + TypeScript + React UI; Vitest + Testing Library
   src/styles/tokens.css   design tokens and typography
 Makefile             setup, test, lint for every component
+install.sh           installs the daemon on a devbox or the hub on its LXC
 ```
-
-Only the scaffold exists so far. The daemon, hub and UI code arrive in later tickets.
 
 ## Requirements
 
@@ -48,6 +47,104 @@ Per component:
   only `localhost`/`127.0.0.1` work. Daemon tokens: `uv run hub-server token add <devbox>`.
 - **devbox-daemon**: `cd devbox-daemon && uv run pytest`
 - **hub-web**: `cd hub-web && npm ci`, then `npm run dev` (dev server), `npm test`, `npm run lint` or `npm run build` (writes `dist/`, never committed)
+
+## Install
+
+`install.sh` at the repo root installs one of two roles from this checkout. Run it
+again whenever you like: it changes nothing unless the checkout, its arguments or
+the files it writes changed, and restarts a service only then. It needs `uv` and
+`jq`; the hub also needs `tailscale` and node (through `mise exec node@lts` when
+mise is installed, else the `node`/`npm` on `PATH`).
+
+### Daemon (each devbox)
+
+As the box user (devboxes runs this on sync/update for a client with `tk_hub`):
+
+```sh
+./install.sh daemon --url wss://tk-hub.<tailnet>.ts.net/ws/daemon --ip <hub tailnet IP> \
+  --token-ref op://<vault>/<item>/<field>
+```
+
+- a uv venv (websockets) in `~/.local/share/tk-hub/daemon-venv`;
+- `~/.config/tk-daemon/config.json`: `url`, `ip` and `token_ref` from the arguments,
+  every other key kept; an argument left out keeps the stored value;
+- `~/.config/tk-daemon/policy.json` seeded (`max_parallel` 5, `usage_gate_pct` 90,
+  `synthesis` `agy`, 300 s) only when it doesn't exist;
+- `tk-statusline` wired into `~/.claude/settings.json` (an existing statusline is
+  chained, not lost);
+- `~/.config/systemd/user/tk-daemon.service` (`Restart=on-failure`), enabled and
+  started, with `sudo loginctl enable-linger` so it runs without a login. It loads
+  the box's 1Password service-account token from
+  `~/.config/op/service-account-token` for `op read`; the hub token itself is
+  never written anywhere.
+
+The daemon runs from this checkout, so a pull followed by `install.sh daemon`
+restarts it on the new code. Logs: `journalctl --user -u tk-daemon`.
+
+### Hub (the hub LXC)
+
+As the user the hub runs as (root, or a user with sudo):
+
+```sh
+./install.sh hub [--host-name tk-hub.<tailnet>.ts.net]
+```
+
+- a uv venv in `~/.local/share/tk-hub/hub-venv`;
+- `hub-web` built into `hub-web/dist` (only when its sources changed);
+- the database at `/var/lib/tk-hub/hub.db`, the directory owned by that user;
+- `/etc/systemd/system/tk-hub.service` (`Restart=on-failure`) serving
+  `127.0.0.1:8000`, with this node's MagicDNS name (or `--host-name`) as its
+  accepted `Host`;
+- `tailscale serve --bg --https=443 http://127.0.0.1:8000`, applied only when the
+  443 proxy points elsewhere (it never runs `tailscale serve reset`, and says which
+  proxy it replaces). The tailnet needs MagicDNS and HTTPS certificates enabled; when
+  they aren't, `tailscale serve` prints the admin-console URL that enables them.
+
+Without `--host-name`, a re-run keeps the host name already in the unit.
+
+To admit only some tailnet users, add a drop-in (`sudo systemctl edit tk-hub`),
+which the installer leaves alone:
+
+```ini
+[Service]
+Environment=TK_HUB_ALLOWED_LOGINS=you@example.com,other@example.com
+```
+
+### Daemon tokens
+
+On the hub, as the hub's user, mint one token per devbox. It is printed once; the
+hub keeps only its hash:
+
+```sh
+TK_HUB_DB=/var/lib/tk-hub/hub.db ~/.local/share/tk-hub/hub-venv/bin/hub-server token add <devbox>
+```
+
+`<devbox>` must equal the daemon's devbox name: the box's short hostname, unless
+its `config.json` sets `devbox`.
+Store it in the client's 1Password vault and give the box its `op://` reference
+(`--token-ref`, or devboxes' `tk_hub.token_ref`). `hub-server token revoke <devbox>`
+refuses that box on its next connect.
+
+### Tailscale ACL
+
+Boxes reach nothing on the tailnet by default. Grant devboxes the hub's HTTPS port
+in the tailnet policy file:
+
+```json
+{
+  "tagOwners": {
+    "tag:devbox": ["autogroup:admin"],
+    "tag:tk-hub": ["autogroup:admin"]
+  },
+  "grants": [
+    { "src": ["tag:devbox"], "dst": ["tag:tk-hub"], "ip": ["tcp:443"] }
+  ]
+}
+```
+
+Merge these into your existing `tagOwners` and `grants`. Boxes run
+`--accept-dns=false`, which is why the daemon config carries the hub's IP as well
+as its name.
 
 ## Protocol
 
