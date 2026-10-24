@@ -384,9 +384,15 @@ def create_app(
         return 502
 
     @app.get("/api/boards/{board_key:path}/tickets/{nn}/diff")
-    async def ticket_diff(board_key: str, nn: str, file: str | None = None):
+    async def ticket_diff(
+        board_key: str,
+        nn: str,
+        file: str | None = None,
+        against: Literal["base", "head"] | None = None,
+    ):
         """get_diff on the ticket's devbox, answered with the daemon's result: the
-        file list and diff_hash, or with ?file= that file's diff. Read-only; the
+        file list and diff_hash, or with ?file= that file's diff; ?against=head
+        diffs against the worktree's HEAD (a resolved merge). Read-only; the
         result goes to this caller, not to /ws/ui. 404 unknown board, ticket or
         file (not in the diff), 409 devbox offline or gone mid-request, or the ticket has no worktree
         (or base) to diff, 504 timed out, 502 any other refusal or failure."""
@@ -396,6 +402,8 @@ def create_app(
         params = {"board_key": board_key, "nn": nn}
         if file:
             params["file"] = file
+        if against:
+            params["against"] = against
         try:
             await hub.send_rpc(
                 devbox, "get_diff", params, board_key=board_key, nn=nn, waiter=waiter

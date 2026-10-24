@@ -111,6 +111,31 @@ def test_ship_verbs_are_routed_and_resolve_needs_a_reason(client, add_token):
     assert rpcs[4]["params"]["reason"] == "notes only"
 
 
+def test_merge_conflict_decisions_are_routed_and_commit_needs_the_confirm(
+    client, add_token
+):
+    with connect_daemon(client, add_token("dev-daniel")) as (daemon, _):
+        daemon.send_json(snapshot())
+        unconfirmed = {"method": "finish_conflict", "params": {}}
+        assert client.post(action_url("27"), json=unconfirmed).status_code == 422
+        for method, params in [
+            ("resolve_conflict", {}),
+            ("finish_conflict", {"confirm": True}),
+            ("abort_conflict", {}),
+        ]:
+            body = {"method": method, "params": params}
+            assert client.post(action_url("27"), json=body).status_code == 202
+        rpcs = [daemon.receive_json() for _ in range(3)]
+
+    for rpc in rpcs:
+        assert_valid(rpc)
+    assert [(r["method"], r["params"]) for r in rpcs] == [
+        ("resolve_conflict", {"board_key": KEY, "nn": "27"}),
+        ("finish_conflict", {"board_key": KEY, "nn": "27", "confirm": True}),
+        ("abort_conflict", {"board_key": KEY, "nn": "27"}),
+    ]
+
+
 def test_an_action_the_schema_rejects_or_outside_the_list_is_422_and_sends_nothing(
     client, add_token
 ):

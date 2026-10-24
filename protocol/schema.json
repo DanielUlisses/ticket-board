@@ -239,6 +239,21 @@
         "at": { "$ref": "#/$defs/timestamp" }
       }
     },
+    "merge_conflict": {
+      "description": "A merge conflict on the ticket's PR, in hub-meta (the daemon writes it). resolving: ticket-merger runs (merge-conflict.sh start ran; the agent resolves and stages, never commits); review: resolved and staged, waiting for the developer's Commit merge (finish_conflict) or Abort (abort_conflict); failed: the agent failed, timed out or left it unresolved, or the daemon stopped mid-resolve, and the merge was aborted (reason, output_tail: the agent's answer and merge-conflict.sh status; abort_conflict may abort again when that abort failed); committed: finish committed and pushed the merge; aborted: the developer aborted it, the PR still conflicts; up_to_date: the branch already had the base, the merge was retried once.",
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["resolving", "review", "failed", "committed", "aborted", "up_to_date"] },
+        "started_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
+        "finished_at": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
+        "base": { "description": "The base branch merged in.", "type": ["string", "null"] },
+        "files": { "description": "The files merge-conflict.sh start reported conflicted.", "type": "array", "items": { "type": "string" } },
+        "summary": { "description": "ticket-merger's answer: each file and how it was resolved, what it refused to choose, the checks.", "type": ["string", "null"] },
+        "reason": { "description": "Why it failed, or a note on the outcome.", "type": ["string", "null"] },
+        "output_tail": { "type": ["string", "null"] }
+      }
+    },
 
     "ticket": {
       "description": "One `board_rows` row (ticket-skill tk.sh) plus its hub-meta fields. board_rows may grow fields: extra properties are allowed.",
@@ -314,7 +329,8 @@
         "new_memory_rule": { "type": ["string", "null"] },
         "synthesis_error": { "description": "Why the last synthesis run failed (synthesis_status failed), else null.", "type": ["string", "null"] },
         "review_comments": { "type": "array", "items": { "$ref": "#/$defs/review_comment" } },
-        "human_review": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/human_review" }] }
+        "human_review": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/human_review" }] },
+        "merge_conflict": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/merge_conflict" }] }
       }
     },
 
@@ -410,11 +426,12 @@
         "refine_with_comment", "set_task_done", "add_manual_task", "refresh_board_brief",
         "propose_memory", "run_retro", "retro_apply", "sweep_board",
         "sync_box",
-        "get_diff", "set_review_comments", "request_changes", "approve_review"
+        "get_diff", "set_review_comments", "request_changes", "approve_review",
+        "resolve_conflict", "finish_conflict", "abort_conflict"
       ]
     },
     "rpc": {
-      "description": "Hub -> daemon. Timeouts: 10 min for synthesis RPCs (refine_with_comment, refresh_board_brief, run_retro), 2 min for the rest.",
+      "description": "Hub -> daemon. Timeouts: 10 min for synthesis RPCs (refine_with_comment, refresh_board_brief, run_retro), 2 min for the rest. resolve_conflict answers at once: ticket-merger runs on (the daemon also starts it itself when merge_pr exits 10), bounded by the synthesis timeout.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "id", "method", "params"],
@@ -429,7 +446,7 @@
         { "if": { "required": ["method"], "properties": { "method": { "const": "launch_ticket" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_launch_ticket" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "say_agent" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_say_agent" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "pane_tail" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_pane_tail" } } } },
-        { "if": { "required": ["method"], "properties": { "method": { "enum": ["open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_ticket", "request_changes"] } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_ticket" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "enum": ["open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_ticket", "request_changes", "resolve_conflict", "abort_conflict"] } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_ticket" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "resolve_nocode" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_resolve_nocode" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "set_policy" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_policy" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "set_archived" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_archived" } } } },
@@ -442,7 +459,8 @@
         { "if": { "required": ["method"], "properties": { "method": { "const": "sync_box" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_sync_box" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "get_diff" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_get_diff" } } } },
         { "if": { "required": ["method"], "properties": { "method": { "const": "set_review_comments" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_set_review_comments" } } } },
-        { "if": { "required": ["method"], "properties": { "method": { "const": "approve_review" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_approve_review" } } } }
+        { "if": { "required": ["method"], "properties": { "method": { "const": "approve_review" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_approve_review" } } } },
+        { "if": { "required": ["method"], "properties": { "method": { "const": "finish_conflict" } } }, "then": { "properties": { "params": { "$ref": "#/$defs/params_finish_conflict" } } } }
       ]
     },
     "params_none": {
@@ -463,6 +481,17 @@
       "properties": {
         "board_key": { "$ref": "#/$defs/board_key" },
         "nn": { "$ref": "#/$defs/nn" }
+      }
+    },
+    "params_finish_conflict": {
+      "description": "Commit merge: merge-conflict.sh finish commits the resolved merge and pushes it (never force). confirm: true is the developer's explicit yes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board_key", "nn", "confirm"],
+      "properties": {
+        "board_key": { "$ref": "#/$defs/board_key" },
+        "nn": { "$ref": "#/$defs/nn" },
+        "confirm": { "const": true }
       }
     },
     "params_launch_ticket": {
@@ -601,14 +630,15 @@
       "properties": { "force": { "type": "boolean" } }
     },
     "params_get_diff": {
-      "description": "Without file: the file list with stats and diff_hash; with file: that file's unified diff.",
+      "description": "Without file: the file list with stats and diff_hash; with file: that file's unified diff. against: base (default) diffs against the ticket's base sha; head against the worktree's HEAD, e.g. a merge in progress against the branch's previous head.",
       "type": "object",
       "additionalProperties": false,
       "required": ["board_key", "nn"],
       "properties": {
         "board_key": { "$ref": "#/$defs/board_key" },
         "nn": { "$ref": "#/$defs/nn" },
-        "file": { "type": "string", "minLength": 1 }
+        "file": { "type": "string", "minLength": 1 },
+        "against": { "enum": ["base", "head"] }
       }
     },
     "params_set_review_comments": {
@@ -753,7 +783,7 @@
       }
     },
     "rest_diff": {
-      "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/diff[?file=]. The daemon's get_diff data, as is: `files` (path, status M/A/D/R, old_path on R, added, removed, binary) without ?file=, at most the daemon's diff_max_files of them (`truncated` true then, `total_files` the real count; diff_hash still covers all); with it that file's entry plus `diff` (unified; empty when stubbed) and `stub` (null, \"binary\", \"over_cap\" or \"nested_repo\"). diff_hash identifies the whole diff, untracked files included (an untracked nested repo, listed as `nested_repo: true` with a trailing slash in its path, by its HEAD only). An untracked file over the daemon's read limit (or past its per-request byte budget) is identified by its stat (inode, size, mtime, ctime, mode), so a mere touch on it changes diff_hash. Errors (rest_error): 404 unknown board, ticket or file, 409 devbox offline (or gone mid-request) or ticket without worktree/base, 504 timed out, 502 any other refusal or failure.",
+      "description": "REST: GET /api/boards/{board_key}/tickets/{nn}/diff[?file=][&against=head]. The daemon's get_diff data, as is (against=head: the worktree against its HEAD, a resolved merge's staged diff against the branch's previous head; base then is that HEAD sha): `files` (path, status M/A/D/R, old_path on R, added, removed, binary) without ?file=, at most the daemon's diff_max_files of them (`truncated` true then, `total_files` the real count; diff_hash still covers all); with it that file's entry plus `diff` (unified; empty when stubbed) and `stub` (null, \"binary\", \"over_cap\" or \"nested_repo\"). diff_hash identifies the whole diff, untracked files included (an untracked nested repo, listed as `nested_repo: true` with a trailing slash in its path, by its HEAD only). An untracked file over the daemon's read limit (or past its per-request byte budget) is identified by its stat (inode, size, mtime, ctime, mode), so a mere touch on it changes diff_hash. Errors (rest_error): 404 unknown board, ticket or file, 409 devbox offline (or gone mid-request) or ticket without worktree/base, 504 timed out, 502 any other refusal or failure.",
       "type": "object",
       "required": ["board_key", "nn", "base", "diff_hash"],
       "properties": {
@@ -826,7 +856,7 @@
       "additionalProperties": false,
       "required": ["method", "params"],
       "properties": {
-        "method": { "enum": ["launch_ticket", "say_agent", "pane_tail", "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode", "resolve_ticket"] },
+        "method": { "enum": ["launch_ticket", "say_agent", "pane_tail", "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode", "resolve_ticket", "resolve_conflict", "finish_conflict", "abort_conflict"] },
         "params": { "type": "object" }
       }
     },

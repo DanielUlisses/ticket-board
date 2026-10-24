@@ -3,13 +3,16 @@ import type { Ticket } from "../protocol/types";
 import styles from "./Card.module.css";
 import { checksMetric, modelTag } from "./checks";
 import { Glyph } from "./Glyph";
+import { conflictLabel } from "./MergeConflict";
 import { useStore } from "./StoreContext";
 
 export function Card({ ticket, boardKey }: { ticket: Ticket; boardKey: string }) {
   const store = useStore();
   const open = () => store.openTicket(boardKey, ticket.nn);
   const summary = ticket.summary ?? ticket.note;
-  const tags = [COLUMN_META[ticket.col].label, modelTag(ticket)].filter((t): t is string => t !== null);
+  const tags = [COLUMN_META[ticket.col].label, conflictLabel(ticket.merge_conflict), modelTag(ticket)].filter(
+    (t): t is string => t !== null,
+  );
   const metric = checksMetric(ticket);
   return (
     <article className={styles.card} aria-label={`${ticket.nn} ${ticket.title}`}

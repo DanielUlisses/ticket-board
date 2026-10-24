@@ -30,10 +30,15 @@ EXPECTED_ERROR = {
     "rpc-launch-model-leading-dash.json": ("/params/model", "pattern"),
     "rpc-launch-model-not-a-token.json": ("/params/model", "pattern"),
     "rpc-resolve-nocode-empty-reason.json": ("/params/reason", "minLength"),
+    "rpc-finish-conflict-without-confirm.json": ("/params", "required"),
     "rpc-result-missing-output-tail.json": ("", "required"),
     "rpc-unknown-method.json": ("/method", "enum"),
     "synthesis-gemini-backend.json": ("/backend", "oneOf"),
     "ticket-missing-synthesis-status.json": ("/boards/0/tickets/0", "required"),
+    "ticket-merge-conflict-unknown-state.json": (
+        "/boards/0/tickets/0/merge_conflict",
+        "oneOf",
+    ),
     "ticket-unknown-column.json": ("/boards/2/tickets/0/col", "enum"),
 }
 
