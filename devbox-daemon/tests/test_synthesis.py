@@ -98,12 +98,13 @@ def test_a_move_into_needs_synthesizes_into_hub_meta_and_reports_events(box, cer
     assert show[0]["cwd"] == str(box.work / "alpha")
 
 
-def test_only_moves_into_needs_human_pr_trigger_and_never_a_first_sight(box, cert):
-    d = setup_board(box, col="human")  # already in human when first seen: no run
+def test_only_moves_into_needs_human_pr_trigger_after_the_catch_up(box, cert):
+    d = setup_board(box, col="human")  # no synthesis yet: the catch-up runs it once
 
     async def scenario():
         async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=0.2):
             await hub.next("snapshot")
+            await hub.next("synthesis_finished")
             for col in ("working", "review", "done", "backlog"):
                 move(d, col)
                 await hub.next("snapshot")
@@ -112,12 +113,122 @@ def test_only_moves_into_needs_human_pr_trigger_and_never_a_first_sight(box, cer
             await hub.next("synthesis_finished")
             return calls
 
-    assert run(scenario()) == 0
+    assert run(scenario()) == 1
+    assert len(box.synth_calls()) == 2
+
+
+def rows_board(box, cols, meta=None):
+    rows = []
+    for i, col in enumerate(cols, 1):
+        f = box.write(f"work/alpha/.scratch/b/{i:02d}-t.md", f"# {i:02d}: T\n")
+        rows.append(row(f"{i:02d}", col, file=str(f), title=f"T{i}"))
+    box.write(".config/tk-daemon/policy.json",
+              {"synthesis": {"backends": ["agy"], "timeout": 2}})  # fmt: skip
+    return box.board("alpha", "b", rows, {"hub-meta.json": meta} if meta else {})
+
+
+def test_catch_up_skips_done_failed_ok_and_a_first_seen_backlog_ticket(box, cert):
+    tickets = {"02": {"synthesis_status": "ok"}, "03": {"synthesis_status": "failed"}}
+    d = rows_board(box, ["backlog", "human", "pr", "done", "needs"],
+                   {"tickets": tickets})  # fmt: skip
+    # 01 backlog (first sight), 02 ok, 03 failed, 04 done, 05 needs and none: only 05
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=0.2):
+            await hub.next("snapshot")
+            started = await hub.next("synthesis_started")
+            await hub.next("synthesis_finished")
+            await asyncio.sleep(1)  # more exports: nothing is retried
+            return started
+
+    assert run(scenario())["nn"] == "05"
+    assert len(box.synth_calls()) == 1
+    t = meta(d)["tickets"]
+    assert t["03"]["synthesis_status"] == "failed" and "01" not in t
+
+
+def test_a_ticket_new_on_the_board_is_synthesized_once(box, cert):
+    d = rows_board(box, ["done"])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=0.2):
+            await hub.next("snapshot")
+            f = box.write("work/alpha/.scratch/b/02-t.md", "# 02: T\n")
+            rows = json.loads((d / "rows.json").read_text())
+            rows.append(row("02", "backlog", file=str(f), title="T2"))
+            (d / "rows.json").write_text(json.dumps(rows))
+            started = await hub.next("synthesis_started")
+            await hub.next("synthesis_finished")
+            await asyncio.sleep(1)  # more exports: not run again
+            return started
+
+    assert run(scenario())["nn"] == "02"
     assert len(box.synth_calls()) == 1
 
 
+def test_a_ticket_that_lands_in_done_is_not_synthesized(box, cert):
+    d = rows_board(box, ["done"])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=0.2):
+            await hub.next("snapshot")
+            f = box.write("work/alpha/.scratch/b/02-t.md", "# 02: T\n")
+            rows = json.loads((d / "rows.json").read_text())
+            rows.append(row("02", "done", file=str(f), title="T2"))
+            (d / "rows.json").write_text(json.dumps(rows))
+            await hub.next("snapshot")
+            await asyncio.sleep(1)
+
+    run(scenario())
+    assert box.synth_calls() == []
+
+
+def test_catch_ups_run_one_after_the_other_and_a_queued_one_rechecks(box, cert):
+    d = rows_board(box, ["human", "human", "human"])
+    box.env.update(FAKE_SYNTH_MODE_AGY="slow", FAKE_SYNTH_DELAY="0.6")
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=0.2):
+            await hub.next("snapshot")
+            seen = [(await hub.next("synthesis_started"))["nn"]]
+            rows = json.loads((d / "rows.json").read_text())
+            rows[2]["col"] = "done"  # leaves while it waits in the queue
+            (d / "rows.json").write_text(json.dumps(rows))
+            while len(seen) < 4:
+                m = await hub.next()
+                if m["type"] in ("synthesis_started", "synthesis_finished"):
+                    seen.append(m["type"])
+            await asyncio.sleep(1.5)
+            return seen
+
+    seen = run(scenario())
+    assert seen[1:] == ["synthesis_finished", "synthesis_started", "synthesis_finished"]
+    assert len(box.synth_calls()) == 2
+    assert "03" not in meta(d)["tickets"]
+
+
+def test_a_queued_catch_up_is_dropped_when_a_click_synthesized_it_meanwhile(box, cert):
+    # unit-level: still_wanted reads hub-meta now, not the export
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location("tkd", DAEMON)
+    tkd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tkd)
+    d = rows_board(box, ["human"])
+    t = {"nn": "01", "col": "human"}
+    me = SimpleNamespace(sent={KEY: {"tickets": [t], "hub_meta": {},
+                                     "board_path": str(d)}})  # fmt: skip
+    assert tkd.Daemon.still_wanted(me, KEY, "01", True)
+    (d / "hub-meta.json").write_text(json.dumps(
+        {"tickets": {"01": {"synthesis_status": "ok"}}}))  # fmt: skip
+    assert not tkd.Daemon.still_wanted(me, KEY, "01", True)
+    assert tkd.Daemon.still_wanted(me, KEY, "01", False)  # a move still runs
+    t["col"] = "done"
+    assert not tkd.Daemon.still_wanted(me, KEY, "01", False)
+
+
 def test_refine_with_comment_passes_the_comment_and_replies_when_done(box, cert):
-    d = setup_board(box, col="human")
+    d = setup_board(box, col="working")
 
     async def scenario():
         async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
@@ -143,7 +254,7 @@ def test_a_failed_run_keeps_the_last_good_meta_and_marks_it_failed(box, cert):
     good = {"summary": "Old summary.", "reviewer_notes": "Old note.", "full_report_md": "Old",
             "manual_tasks": [{"text": "Old task", "done": True, "source": "synthesis"}],
             "synthesis_backend": "cursor", "synthesis_status": "ok"}  # fmt: skip
-    d = setup_board(box, col="human", meta={"tickets": {"01": good}})
+    d = setup_board(box, col="working", meta={"tickets": {"01": good}})
     box.env["FAKE_SYNTH_MODE_AGY"] = "hang"
     box.env["FAKE_SYNTH_MODE_CLAUDE"] = "garbage"
 
@@ -179,7 +290,7 @@ def test_a_second_run_merges_the_checklist_keeping_ticks_and_developer_items(box
                {"text": "Dropped, checked", "done": True, "source": "synthesis"},
                {"text": "Mine", "done": False, "source": "developer"}]  # fmt: skip
     d = setup_board(
-        box, col="human", meta={"tickets": {"01": {"manual_tasks": current}}}
+        box, col="working", meta={"tickets": {"01": {"manual_tasks": current}}}
     )
 
     async def scenario():
@@ -241,7 +352,7 @@ def test_refine_refuses_an_unknown_ticket_without_running_a_backend(box, cert):
 
 def test_a_run_left_running_by_a_killed_daemon_is_marked_interrupted(box, cert):
     stale = {"summary": "Old summary.", "synthesis_status": "running"}
-    d = setup_board(box, col="human", meta={"tickets": {"01": stale}})
+    d = setup_board(box, col="working", meta={"tickets": {"01": stale}})
 
     async def scenario():
         async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
@@ -262,7 +373,7 @@ def test_a_run_left_running_by_a_killed_daemon_is_marked_interrupted(box, cert):
 
 
 def test_a_run_cut_by_the_rpc_timeout_reports_synthesis_failed(box, cert):
-    d = setup_board(box, col="human")
+    d = setup_board(box, col="working")
     box.env["FAKE_SYNTH_MODE_AGY"] = "hang"
 
     async def scenario():
@@ -283,7 +394,7 @@ def test_a_run_cut_by_the_rpc_timeout_reports_synthesis_failed(box, cert):
 
 
 def test_tk_agy_timeout_overrides_the_policy_timeout(box, cert):
-    setup_board(box, col="human")  # policy synthesis.timeout: 2
+    setup_board(box, col="working")  # policy synthesis.timeout: 2
     box.env["TK_AGY_TIMEOUT"] = "0.5"
     box.env["FAKE_SYNTH_MODE_AGY"] = "hang"
     box.env["FAKE_SYNTH_MODE_CLAUDE"] = "hang"
@@ -301,7 +412,7 @@ def test_tk_agy_timeout_overrides_the_policy_timeout(box, cert):
 
 
 def test_the_coordinator_report_is_read_under_xdg_state_home(box, cert):
-    setup_board(box, col="human")
+    setup_board(box, col="working")
     state = box.tmp / "state"
     box.env["XDG_STATE_HOME"] = str(state)
     report = state / "ticket-skill/alpha/reports/feat-01-export.md"
@@ -364,7 +475,7 @@ def local(box, monkeypatch):
         for k in ("XDG_STATE_HOME", "TK_AGY_TIMEOUT"):
             if k not in env:
                 monkeypatch.delenv(k, raising=False)
-        return Local(box, setup_board(box, col="human"))
+        return Local(box, setup_board(box, col="working"))
 
     return make
 

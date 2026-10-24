@@ -247,9 +247,12 @@ the one beside `tk.sh` (symlinks followed), else the installed skill's.
 
 Card summaries, full reports and manual checklists are written by a cheap CLI
 (`devbox-daemon/agy_runner.py`), never by the coding agents. A run starts when a
-ticket moves into `needs`, `human` or `pr` between two exports (a ticket or board
-seen for the first time has not moved; archived boards are skipped), and on the
-`refine_with_comment` RPC (the sheet's ✦ Update via agy, with an optional comment).
+ticket moves into `needs`, `human` or `pr` between two exports, and as a catch-up after
+every export for a ticket with no synthesis yet that is in `needs`/`human`/`pr`, or that
+is new on a board this daemon had already exported (any column but `done`). `done`
+tickets and `failed` runs are never retried automatically, and archived boards are
+skipped. These runs queue one at a time per box; the `refine_with_comment` RPC (the
+sheet's ✦ Update via agy, with an optional comment) runs outside that queue.
 One run per ticket at a time.
 
 The context is the ticket file,

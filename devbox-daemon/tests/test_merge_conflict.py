@@ -24,7 +24,7 @@ def conflicted(box, **files):
     board = box.board(
         "alpha", "b",
         [row("05", "pr", worktree=str(wt), branch="feat-05-x", title="X",
-             file=str(ticket))],
+             file=str(ticket), synthesis_status="ok")],
         files,
     )  # fmt: skip
     (board / "merge-exit").write_text("10")
