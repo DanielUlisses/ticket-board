@@ -42,6 +42,23 @@ def boards_by_key(msg) -> dict:
     return {b["key"]: b for b in msg["boards"]}
 
 
+def test_project_memory_file_is_read_and_is_never_a_board(box):
+    box.board("alpha", "tk-hub", [row("01")])
+    box.write("work/alpha/.scratch/project-memory.md", "1. new rule\n")
+    box.board("beta", "zig", [row("02")])
+    box.write("work/beta/docs/agents/project-memory.md", "1. old rule\n")  # one-release fallback
+    box.board("gamma", "both", [row("03")])
+    box.write("work/gamma/.scratch/project-memory.md", "1. new\n")
+    box.write("work/gamma/docs/agents/project-memory.md", "1. old\n")
+
+    boards = boards_by_key(snapshot(box))
+
+    assert sorted(boards) == ["dev-test/alpha/tk-hub", "dev-test/beta/zig", "dev-test/gamma/both"]
+    assert boards["dev-test/alpha/tk-hub"]["project_memory"] == "1. new rule\n"
+    assert boards["dev-test/beta/zig"]["project_memory"] == "1. old rule\n"
+    assert boards["dev-test/gamma/both"]["project_memory"] == "1. new\n"
+
+
 def test_finds_every_board_under_the_glob_and_merges_memory_hub_meta_and_usage(box):
     box.board("alpha", "tk-hub", [row("01", "working"), row("02")],
               {"hub-meta.json": {"archived": False, "summary_note": "kept",
@@ -49,7 +66,7 @@ def test_finds_every_board_under_the_glob_and_merges_memory_hub_meta_and_usage(b
                "board.md": "# tk-hub\n"})  # fmt: skip
     box.board("alpha", "other", [row("01", "review")])
     box.board("beta", "zig", [row("03", "done")])
-    box.write("work/alpha/docs/agents/project-memory.md", "# Project memory\n1. rule\n")
+    box.write("work/alpha/.scratch/project-memory.md", "# Project memory\n1. rule\n")
     box.write(".local/state/tk-daemon/usage.json", {
         "rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": "2099-01-01T00:00:00Z"},
                         "seven_day": {"used_percentage": 71.5, "resets_at": 4070908800}},

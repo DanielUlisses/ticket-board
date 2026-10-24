@@ -126,6 +126,13 @@ function Resolve({ label, pending, onResolve }: {
 }
 
 /**
+ * A "Propose to memory" ticket: the daemon titles it `Project memory — …`. It edits only the
+ * gitignored .scratch/project-memory.md, so there is nothing to push or open a PR for.
+ */
+export const isMemoryTicket = (t: Ticket) => t.title.startsWith("Project memory — ");
+const MEMORY_TIP = "A memory ticket only edits .scratch/project-memory.md: nothing to commit. Resolve without code.";
+
+/**
  * The ship footer: human → ⇡ Open PR (forge github|azure) or ⇡ Push via SSH (forge
  * none: never a PR); pr → ✓ Merge with its gates, Verify; done and landed → Resolve (plain);
  * needs, review, human, pr → Resolve without code. Null where it has nothing.
@@ -161,6 +168,7 @@ export function ShipActions({ board, ticket, api }: { board: Board; ticket: Tick
     const none = board.policy.forge === "none";
     const method = none ? "ssh_push" : "open_pr";
     const label = none ? "⇡ Push via SSH" : "⇡ Open PR";
+    const memory = isMemoryTicket(ticket);
     return (
       <div className={styles.relay}>
         <div className={styles.row}>
@@ -169,7 +177,8 @@ export function ShipActions({ board, ticket, api }: { board: Board; ticket: Tick
             type="button"
             className={styles.primary}
             data-primary="true"
-            disabled={waiting(method)}
+            disabled={memory || waiting(method)}
+            title={memory ? MEMORY_TIP : undefined}
             aria-busy={waiting(method)}
             onClick={send(label, method)}
           >

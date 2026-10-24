@@ -511,7 +511,8 @@ def create_app(
     @app.post("/api/boards/{board_key:path}/memory", status_code=202)
     async def propose_memory(board_key: str, request: MemoryProposal):
         """propose_memory on the board's devbox: the daemon appends a project-memory
-        ticket to the board. The hub never writes project-memory.md itself."""
+        ticket to the board. The hub never writes .scratch/project-memory.md itself;
+        the ticket resolves with no code."""
         board = hub.store.boards.get(board_key)
         if not board:
             raise HTTPException(404, f"no board {board_key}")

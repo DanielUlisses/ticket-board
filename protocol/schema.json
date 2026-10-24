@@ -341,7 +341,7 @@
         "board_path": { "type": "string" },
         "board_md": { "type": ["string", "null"] },
         "retro_results_md": { "type": ["string", "null"] },
-        "project_memory": { "description": "Contents of <root>/docs/agents/project-memory.md, or null.", "type": ["string", "null"] },
+        "project_memory": { "description": "Contents of <root>/.scratch/project-memory.md (else the one-release fallback <root>/docs/agents/project-memory.md), or null.", "type": ["string", "null"] },
         "hub_meta": { "$ref": "#/$defs/hub_meta" },
         "policy": { "$ref": "#/$defs/policy" },
         "policy_sources": { "$ref": "#/$defs/policy_sources" },
@@ -928,7 +928,7 @@
       "$ref": "#/$defs/rest_scan"
     },
     "rest_propose_memory": {
-      "description": "REST: POST /api/boards/{key}/memory, body {text} -> 202, one propose_memory rpc to the board's devbox; the daemon appends a project-memory ticket to the board (the hub never writes project-memory.md). 404 unknown board or devbox offline, 422 empty text (see rest_error).",
+      "description": "REST: POST /api/boards/{key}/memory, body {text} -> 202, one propose_memory rpc to the board's devbox; the daemon appends a project-memory ticket to the board (the hub never writes .scratch/project-memory.md; the ticket edits only that gitignored file and resolves with no code). 404 unknown board or devbox offline, 422 empty text (see rest_error).",
       "$ref": "#/$defs/rest_set_policy"
     },
     "rest_set_policy": {

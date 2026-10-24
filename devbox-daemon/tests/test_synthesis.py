@@ -49,7 +49,7 @@ def rpc(id, method, **params):
 
 def test_a_move_into_needs_synthesizes_into_hub_meta_and_reports_events(box, cert):
     d = setup_board(box, meta={"archived": False, "summary_note": "kept"})
-    box.write("work/alpha/docs/agents/project-memory.md", "1. Keep stdout pure JSON.\n")
+    box.write("work/alpha/.scratch/project-memory.md", "1. Keep stdout pure JSON.\n")
     box.write(".local/state/ticket-skill/alpha/reports/feat-01-export.md",
               "# Coordinator report\n\nAll criteria met.\n")  # fmt: skip
 

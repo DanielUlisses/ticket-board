@@ -7,7 +7,8 @@
 # whose repo is a main checkout (.git is a directory, not a worktree's file),
 # as `tk.sh boards` lists it, exported with `tk.sh export <path>` — both run from
 # the main checkout. Each board is merged with:
-#   project_memory  <root>/docs/agents/project-memory.md (read only, never written)
+#   project_memory  <root>/.scratch/project-memory.md, else (one release) the old
+#                   <root>/docs/agents/project-memory.md (read only, never written)
 #   hub_meta        .scratch/<board>/hub-meta.json; its `tickets.<NN>` objects are
 #                   merged into those tickets instead
 #   policy          `tk.sh policy <path>` when `tk.sh help` lists that verb (an error
@@ -162,7 +163,9 @@ export_board() {  # <root> <board_path> -> one board object on stdout
        elif $k == "forge" then "detected"
        else "default" end)}) | add' "$TMP/policy.json" >"$TMP/policy-sources.json" || return 1
   read_obj_strict "$path/hub-meta.json" >"$TMP/meta.json" || return 1
-  read_text "$root/docs/agents/project-memory.md" >"$TMP/memory.json"
+  mem="$root/.scratch/project-memory.md"
+  [[ -e "$mem" ]] || mem="$root/docs/agents/project-memory.md"   # one-release fallback
+  read_text "$mem" >"$TMP/memory.json"
   b="$(jq -cS --arg devbox "$DEVBOX" --slurpfile policy "$TMP/policy.json" \
         --slurpfile psrc "$TMP/policy-sources.json" \
         --slurpfile meta "$TMP/meta.json" --slurpfile memory "$TMP/memory.json" '

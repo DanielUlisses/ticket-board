@@ -97,7 +97,7 @@ function ProposeMemory({ board, ticket, api }: { board: Board; ticket: Ticket; a
         className={styles.proposeText}
         rows={3}
         value={text}
-        placeholder="A rule for docs/agents/project-memory.md"
+        placeholder="A rule for .scratch/project-memory.md"
         onChange={(e) => setText(e.target.value)}
       />
       <button type="button" className={`${styles.action} ${styles.proposeBtn}`} disabled={busy || !text.trim()} onClick={send}>

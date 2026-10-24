@@ -709,6 +709,21 @@ def read_file(path: Path) -> str | None:
         return None
 
 
+def read_project_memory(root: str | Path) -> str | None:
+    """<root>/.scratch/project-memory.md, else (one release) the old tracked
+    docs/agents/project-memory.md. Read only; same rule as tk-export.sh."""
+    root = Path(root)
+    new = root / ".scratch/project-memory.md"
+    return read_file(new if new.exists() else root / "docs/agents/project-memory.md")
+
+
+MEMORY_TITLE = "Project memory — "  # what propose_memory titles its tickets
+
+
+def is_memory_ticket(ticket: dict) -> bool:
+    return str(ticket.get("title", "")).startswith(MEMORY_TITLE)
+
+
 class Daemon:
     racy_test_s: float | None = None  # see main
 
@@ -1160,6 +1175,10 @@ class Daemon:
         (10/11/12) come back by exit code with the gates in data.gates."""
         board, nn = self.board(params), params["nn"]
         verb, cols = SHIP_VERBS[method]
+        if method in ("open_pr", "ssh_push") and any(
+            t["nn"] == nn and is_memory_ticket(t) for t in board["tickets"]
+        ):
+            raise RpcRefused("memory ticket: resolve without code")
         extra = []
         if method == "resolve_nocode":
             reason = " ".join(params["reason"].split())
@@ -1916,7 +1935,7 @@ class Daemon:
             ticket_md=read_file(Path(file)) if os.path.isabs(file) else None,
             report_md=report,
             pane=pane,
-            project_memory=read_file(Path(root) / "docs/agents/project-memory.md"),
+            project_memory=read_project_memory(root),
             comment=comment,
             backends=synthesis_backends(policy),
             timeout=self.agy_timeout or self.policy_timeout(board, policy),
@@ -2027,9 +2046,7 @@ class Daemon:
                 ctx = agy_runner.SynthesisContext(
                     cwd=board["root"],
                     ticket=f"{board.get('slug') or key}",
-                    project_memory=read_file(
-                        Path(board["root"]) / "docs/agents/project-memory.md"
-                    ),
+                    project_memory=read_project_memory(board["root"]),
                     backends=synthesis_backends(policy),
                     timeout=self.agy_timeout or self.policy_timeout(board, policy),
                     commands=policy.get("commands")
@@ -2077,8 +2094,9 @@ class Daemon:
 
     async def rpc_propose_memory(self, ws, params: dict) -> dict:
         """Project memory only changes through a ticket: append the next-numbered
-        ticket to the board asking for the rule; it then flows through the normal
-        scheduler and merge gate. Nothing here writes project-memory.md."""
+        ticket to the board asking for the rule. The ticket edits only the gitignored
+        .scratch/project-memory.md and resolves with no code (nothing to commit).
+        Nothing here writes project-memory.md."""
         b = self.sent.get(params.get("board_key"))
         text = params.get("text")
         if b is None:
@@ -2137,16 +2155,25 @@ class Daemon:
         with fh:
             fh.write(
                 f"# {nn}: Project memory — {short}\n\n"
-                "**What to build:** Add this rule to `docs/agents/project-memory.md` in "
-                "that file's voice (match its existing style and numbering), and prune "
-                "any line this makes stale or redundant. Change nothing else.\n\n"
+                "**What to build:** Add this rule to `.scratch/project-memory.md` in the "
+                "main checkout, in that file's voice (match its existing style and "
+                "numbering), and prune any line this makes stale or redundant. That "
+                "file is gitignored: edit it and change nothing else, and never touch "
+                "a tracked file. There is nothing to commit, so no branch, PR or "
+                "merge.\n\n"
+                f"**File:** `{b['root']}/.scratch/project-memory.md` (absolute). This "
+                "ticket overrides \"work only inside the worktree\" and \"don't edit "
+                "that file\": edit exactly this file, in the main checkout. When the "
+                "rule is in, stop; the developer resolves it with "
+                f"`tk.sh resolve {b['board_id']} {nn} --no-code \"memory updated\"` "
+                "(hub: Resolve without code).\n\n"
                 f"> {quoted}\n\n"
                 f"**Repo:** {b['repo']} — {b['root']}\n"
                 "**Blocked by:** None\n"
-                "**Seams under test:** None — docs only\n"
+                "**Seams under test:** None — memory only\n"
                 "**Suggested model:** sonnet\n"
                 "**Suggested effort:** low\n\n"
-                "- [ ] the rule is in `docs/agents/project-memory.md`, in the file's voice\n"
+                "- [ ] the rule is in `.scratch/project-memory.md`, in the file's voice\n"
                 "- [ ] stale or duplicate lines are pruned\n"
             )
         return {"ok": True, "exit_code": 0, "output_tail": f"wrote {path}"}

@@ -60,6 +60,21 @@ describe("ship footer", () => {
     expect(client.ship).toHaveBeenCalledWith("⇡ Open PR", board.key, ticket.nn, "open_pr");
   });
 
+  it("a memory ticket in human: Resolve without code, Open PR disabled with a tooltip", () => {
+    setup(GITHUB, { col: "human", title: "Project memory — keep stdout pure JSON" });
+    expect(buttons()).toContain("Resolve without code");
+    const pr = within(footer()).getByRole("button", { name: /Open PR/ }) as HTMLButtonElement;
+    expect(pr.disabled).toBe(true);
+    expect(pr.title).toMatch(/\.scratch\/project-memory\.md/);
+  });
+
+  it("a memory ticket on forge=none: Push via SSH disabled with a tooltip", () => {
+    setup(NO_FORGE, { col: "human", title: "Project memory — a rule" });
+    const push = within(footer()).getByRole("button", { name: /Push via SSH/ }) as HTMLButtonElement;
+    expect(push.disabled).toBe(true);
+    expect(push.title).not.toBe("");
+  });
+
   it("forge=none offers ⇡ Push via SSH and never a PR", () => {
     const { client, board, ticket } = setup(NO_FORGE, { col: "human" });
     expect(board.policy.forge).toBe("none");

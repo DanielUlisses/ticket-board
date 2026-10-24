@@ -494,6 +494,11 @@ describe("report modal", () => {
       await waitFor(() => expect(field().value).toBe(""));
     });
 
+    it("the placeholder names .scratch/project-memory.md", () => {
+      setup([KEY, "02"]);
+      expect(field().placeholder).toBe("A rule for .scratch/project-memory.md");
+    });
+
     it("accepts free text when synthesis offered none, and refuses an empty one", () => {
       const { client } = setup([KEY, "02"]);
       expect(field().value).toBe("");

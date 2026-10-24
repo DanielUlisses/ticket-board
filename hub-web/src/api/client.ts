@@ -291,7 +291,7 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
       }
       return false;
     },
-    /** Proposes a project-memory rule: the board's daemon appends a ticket for it (the hub never writes project-memory.md). */
+    /** Proposes a project-memory rule: the board's daemon appends a ticket for it (the hub never writes .scratch/project-memory.md; the ticket resolves with no code). */
     async proposeMemory(boardKey: string, text: string): Promise<boolean> {
       try {
         const res = await doFetch(`${origin}/api/boards/${boardKey.split("/").map(encodeURIComponent).join("/")}/memory`, {

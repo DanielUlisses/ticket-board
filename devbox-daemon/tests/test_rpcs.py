@@ -481,6 +481,22 @@ def test_each_ship_verb_runs_its_tk_sh_call_from_the_main_checkout(
     assert c["cwd"] == str(box.work / "alpha")
 
 
+@pytest.mark.parametrize("method", ["open_pr", "ssh_push"])
+def test_a_memory_ticket_is_never_pushed_or_opened_as_a_pr(box, cert, method):
+    box.board("alpha", "b", [row("05", "human", title="Project memory — a rule")])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            return await call(hub, method, ship())
+
+    result = run(scenario())
+
+    assert (result["ok"], result["exit_code"]) == (False, None)
+    assert "memory ticket" in result["reason"]
+    assert not [c for c in box.tk_calls() if c["argv"][0] in ("pr", "push")]
+
+
 @pytest.mark.parametrize(
     ("method", "col"),
     [("open_pr", "pr"), ("ssh_push", "working"), ("merge_pr", "human")],

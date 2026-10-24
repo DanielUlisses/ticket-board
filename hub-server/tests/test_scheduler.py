@@ -412,6 +412,18 @@ def test_policy_wins_over_waves():
     }
 
 
+def test_waves_never_ship_a_memory_ticket():
+    plan = run(
+        [board(tickets=[reviewed("01", title="Project memory — a rule"),
+                        reviewed("02", title="Project memory a rule")],
+               night_shift=True)],
+        settings=WAVES,
+    )  # fmt: skip
+
+    assert sent(plan) == [("open_pr", "alpha", "02")]
+    assert why(plan, "01") == "memory ticket: resolve without code"
+
+
 def test_waves_ship_only_what_passed_review():
     # human only says the agent stopped (idle or done): its checks say whether
     # the review passed.

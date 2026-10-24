@@ -517,6 +517,8 @@ def waves_ship(board: dict, ticket: dict):
     wins."""
     policy = board["policy"]
     method = "ssh_push" if policy.get("forge") == "none" else "open_pr"
+    if str(ticket.get("title", "")).startswith("Project memory — "):
+        return method, "memory ticket: resolve without code"
     if not policy.get("night_shift"):
         return method, "night_shift is off for this board"
     if policy.get("require_human_before_pr"):

@@ -904,10 +904,14 @@ def test_propose_memory_appends_the_next_numbered_well_formed_ticket(box, cert):
     lines = body.splitlines()
     assert lines[0] == "# 10: Project memory — Export verbs print JSON only on stdout."
     assert "Export verbs print JSON only on stdout." in body
-    assert "docs/agents/project-memory.md" in body
+    assert f"`{box.work / 'alpha'}/.scratch/project-memory.md`" in body
+    assert "docs/agents" not in body
+    assert "overrides" in body and "work only inside the worktree" in body
+    assert "stop; the developer resolves it with" in body
+    assert "`tk.sh resolve b 10 --no-code \"memory updated\"`" in body
     assert "**Repo:** alpha — " + str(box.work / "alpha") in lines
     assert "**Blocked by:** None" in lines
-    assert "**Seams under test:** None — docs only" in lines
+    assert "**Seams under test:** None — memory only" in lines
     assert "**Suggested model:** sonnet" in lines
     assert "**Suggested effort:** low" in lines
 
@@ -972,3 +976,24 @@ def test_propose_memory_keeps_hostile_text_out_of_the_header_and_the_path(box, c
     assert "**Blocked by:** None" in lines
     assert sum(1 for ln in lines if ln.startswith("**Blocked by:**")) == 1
     assert not [ln for ln in lines if ln.startswith("# ") and ln != lines[0]]
+
+
+def test_read_project_memory_prefers_the_scratch_file_and_falls_back_only_when_absent(
+    tmp_path,
+):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("tk_daemon", DAEMON)
+    tkd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tkd)
+    new = tmp_path / ".scratch" / "project-memory.md"
+    old = tmp_path / "docs" / "agents" / "project-memory.md"
+    assert tkd.read_project_memory(tmp_path) is None
+    old.parent.mkdir(parents=True)
+    old.write_text("old\n")
+    assert tkd.read_project_memory(tmp_path) == "old\n"
+    new.parent.mkdir()
+    new.write_text("new\n")
+    assert tkd.read_project_memory(tmp_path) == "new\n"
+    new.write_text("")  # present but empty: no fallback
+    assert tkd.read_project_memory(tmp_path) == ""

@@ -69,7 +69,8 @@ Per component:
   (`POST …/tickets/{nn}/tasks`, `{text, done}`), and `rest_error` for any error.
 
 A board snapshot (`$defs/board`) is `tk.sh export <board>` (ticket-skill) merged with
-`docs/agents/project-memory.md`, `.scratch/<board>/hub-meta.json` and the resolved
+`.scratch/project-memory.md` (gitignored; the old `docs/agents/project-memory.md`
+is the one-release fallback), `.scratch/<board>/hub-meta.json` and the resolved
 `tk.sh policy <board>`. It is keyed `<devbox>/<repo>/<board>`. A ticket
 (`$defs/ticket`) is a `board_rows` row plus its hub-meta fields (`summary`,
 `reviewer_notes`, `full_report_md`, `manual_tasks`, `synthesis_backend`,
@@ -139,7 +140,7 @@ seen for the first time has not moved; archived boards are skipped), and on the
 One run per ticket at a time.
 
 The context is the ticket file,
-`${XDG_STATE_HOME:-~/.local/state}/ticket-skill/<repo>/reports/<branch>.md` when present, `tk.sh show <board> <NN> 180`, `docs/agents/project-memory.md` and the
+`${XDG_STATE_HOME:-~/.local/state}/ticket-skill/<repo>/reports/<branch>.md` when present, `tk.sh show <board> <NN> 180`, `.scratch/project-memory.md` and the
 comment, each cut to fit one argv item. The board's resolved policy picks the
 backends, tried in order: `synthesis.backends` (default `["agy"]`; each one of
 `agy`, `cursor`, `claude`), the next one only when one times out, is missing, exits
