@@ -144,6 +144,25 @@ board_policy() {  # <root> <board_path> <export_file>
     * $box[0] * $repo[0] * $board[0]' "$exp"
 }
 
+# {<ticket file>: text|null}: the ticket files' raw text, cut at BODY_BYTES like the
+# synthesis sections (agy_runner._cut); null when the file is not absolute or unreadable.
+BODY_BYTES=20000
+ticket_bodies() {  # <export.json> -> JSON object on stdout
+  local f mark='[...cut...]'
+  local room=$((BODY_BYTES - ${#mark} - 1))
+  {
+    while IFS= read -r f; do
+      [[ "$f" == /* && -f "$f" && -r "$f" ]] || { jq -cn --arg f "$f" '{($f): null}'; continue; }
+      if (( $(stat -c %s "$f") > BODY_BYTES )); then
+        { head -c "$room" "$f" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true; printf '\n%s' "$mark"; } \
+          | jq -Rsc --arg f "$f" '{($f): .}'
+      else
+        jq -Rsc --arg f "$f" '{($f): .}' "$f"
+      fi
+    done < <(jq -r '.tickets[]? | .file? | strings' "$1")
+  } | jq -sc 'add // {}'
+}
+
 export_board() {  # <root> <board_path> -> one board object on stdout
   local root="$1" path="$2" exp="$TMP/export.json" b
   (cd "$root" && call "$TK_SH" export "$path") >"$exp" || return 1
@@ -163,7 +182,8 @@ export_board() {  # <root> <board_path> -> one board object on stdout
        else "default" end)}) | add' "$TMP/policy.json" >"$TMP/policy-sources.json" || return 1
   read_obj_strict "$path/hub-meta.json" >"$TMP/meta.json" || return 1
   read_text "$root/docs/agents/project-memory.md" >"$TMP/memory.json"
-  b="$(jq -cS --arg devbox "$DEVBOX" --slurpfile policy "$TMP/policy.json" \
+  ticket_bodies "$exp" >"$TMP/bodies.json" || return 1
+  b="$(jq -cS --arg devbox "$DEVBOX" --slurpfile bodies "$TMP/bodies.json" --slurpfile policy "$TMP/policy.json" \
         --slurpfile psrc "$TMP/policy-sources.json" \
         --slurpfile meta "$TMP/meta.json" --slurpfile memory "$TMP/memory.json" '
     ($meta[0].tickets // {}) as $mt
@@ -173,7 +193,7 @@ export_board() {  # <root> <board_path> -> one board object on stdout
            policy: $policy[0], policy_sources: $psrc[0],
            tickets: [.tickets[] | {summary: null, reviewer_notes: null, full_report_md: null,
                                    manual_tasks: [], synthesis_backend: null, synthesis_status: "none"}
-                                  + . + ($mt[.nn] // {})]}' "$exp")" || return 1
+                                  + . + {body: ($bodies[0][.file | strings] // null)} + ($mt[.nn] // {})]}' "$exp")" || return 1
   # A failed step must fail the board, never print nothing (the daemon would report it removed).
   jq -e 'type == "object"' >/dev/null 2>&1 <<<"$b" || return 1
   jq -c --arg hash "sha256:$(sha256sum <<<"$b" | cut -d' ' -f1)" \

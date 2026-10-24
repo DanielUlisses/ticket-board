@@ -509,3 +509,32 @@ def test_a_zero_padded_start_index_is_decimal(box):
     assert r.returncode == 0, r.stderr
     calls = [c["argv"][1] for c in box.tk_calls() if c["argv"][0] == "export"]
     assert calls[0].endswith("/j")
+
+
+def test_tickets_carry_their_file_text_as_body_and_editing_it_changes_the_hash(
+    box, tmp_path
+):
+    f = tmp_path / "01-t.md"
+    f.write_text("# 01\n\nwhat to build é\n")
+    box.board("alpha", "b", [row("01", file=str(f)), row("02")])
+    first = snapshot(box)["boards"][0]
+    f.write_text("# 01\n\nedited\n")
+    second = snapshot(box)["boards"][0]
+
+    assert [t["body"] for t in first["tickets"]] == ["# 01\n\nwhat to build é\n", None]
+    assert second["tickets"][0]["body"] == "# 01\n\nedited\n"
+    assert first["hash"] != second["hash"]
+
+
+def test_an_oversized_ticket_file_is_cut_and_marked(box, tmp_path):
+    text = "a" + "é" * 30_000
+    f = tmp_path / "01-t.md"
+    f.write_text(text)
+    box.board("alpha", "b", [row("01", file=str(f))])
+
+    body = snapshot(box, LC_ALL="C")["boards"][0]["tickets"][0]["body"]
+
+    assert len(body.encode()) <= 20_000
+    assert body.endswith("\n[...cut...]")
+    assert body.startswith("aéé")
+    assert text.startswith(body[:-12])
