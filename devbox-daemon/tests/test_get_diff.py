@@ -767,3 +767,29 @@ def test_a_non_utf8_global_excludes_path_still_applies(box, cert, wt):
     files = by_path(get_diff(box, cert, wt))
 
     assert "keep.txt" in files and "keys.secret" not in files
+
+
+def test_against_head_diffs_the_worktree_against_its_head_not_the_base(box, cert, wt):
+    """A merge in progress, as ticket-merger leaves it, shows against the branch's
+    previous head: what the merge brings, not the ticket's whole change."""
+    (wt.path / "mod.txt").write_text("one\nTWO\nthree\n")
+    git(wt.path, "commit", "-qam", "the ticket's own work")
+    head = git(wt.path, "rev-parse", "HEAD")
+    (wt.path / "gone.txt").write_text("merged in\n")
+    git(wt.path, "add", "gone.txt")  # staged, as a resolved merge is
+    box.board("alpha", "b", [row("01", "pr", worktree=str(wt.path), base=wt.base)])
+
+    async def scenario():
+        async with FakeHub(cert) as hub, daemon(box, hub, cert, export_interval_s=600):
+            await hub.next("snapshot")
+            params = {"board_key": KEY, "nn": "01", "against": "head"}
+            listing = await call(hub, "get_diff", params, "r-1")
+            one = await call(hub, "get_diff", {**params, "file": "gone.txt"}, "r-2")
+            return listing, one
+
+    listing, one = run(scenario())
+
+    assert listing["ok"], listing
+    assert listing["data"]["base"] == head
+    assert [f["path"] for f in listing["data"]["files"]] == ["gone.txt"]
+    assert "+merged in" in one["data"]["diff"]

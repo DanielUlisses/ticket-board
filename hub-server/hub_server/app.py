@@ -7,7 +7,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -214,6 +214,11 @@ class MemoryProposal(BaseModel):
     text: str
 
 
+class RetroApply(BaseModel):
+    mark: Literal["approve", "reject", "defer"]
+    ids: list[Annotated[str, Field(pattern=r"^[ME][0-9]+$")]] = Field(min_length=1)
+
+
 TIMESTAMP = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
 
 
@@ -415,9 +420,15 @@ def create_app(
         return 502
 
     @app.get("/api/boards/{board_key:path}/tickets/{nn}/diff")
-    async def ticket_diff(board_key: str, nn: str, file: str | None = None):
+    async def ticket_diff(
+        board_key: str,
+        nn: str,
+        file: str | None = None,
+        against: Literal["base", "head"] | None = None,
+    ):
         """get_diff on the ticket's devbox, answered with the daemon's result: the
-        file list and diff_hash, or with ?file= that file's diff. Read-only; the
+        file list and diff_hash, or with ?file= that file's diff; ?against=head
+        diffs against the worktree's HEAD (a resolved merge). Read-only; the
         result goes to this caller, not to /ws/ui. 404 unknown board, ticket or
         file (not in the diff), 409 devbox offline or gone mid-request, or the ticket has no worktree
         (or base) to diff, 504 timed out, 502 any other refusal or failure."""
@@ -427,6 +438,8 @@ def create_app(
         params = {"board_key": board_key, "nn": nn}
         if file:
             params["file"] = file
+        if against:
+            params["against"] = against
         try:
             await hub.send_rpc(
                 devbox, "get_diff", params, board_key=board_key, nn=nn, waiter=waiter
@@ -507,6 +520,62 @@ def create_app(
         return await ticket_rpc(
             board_key, nn, "set_task_done", {"text": request.text, "done": request.done}
         )
+
+    async def board_rpc_result(board_key: str, method: str, params: dict) -> dict:
+        """`method` on the board's devbox, answered with the daemon's result (data
+        included) to this caller, not /ws/ui. 404 unknown board, 409 devbox offline
+        or the daemon refused, 504 timed out, 502 the run failed."""
+        board = hub.store.boards.get(board_key)
+        if not board:
+            raise HTTPException(404, f"no board {board_key}")
+        waiter = asyncio.get_running_loop().create_future()
+        try:
+            await hub.send_rpc(
+                board["devbox"],
+                method,
+                {"board_key": board_key, **params},
+                board_key=board_key,
+                waiter=waiter,
+            )
+        except DevboxOffline:
+            raise HTTPException(409, f"devbox {board['devbox']} is offline") from None
+        result = await waiter
+        if not result.get("ok"):
+            reason = result.get("reason") or f"{method} failed"
+            tail = result.get("output_tail") or ""
+            status = (
+                504
+                if reason.startswith("timed out")
+                else 409
+                if result.get("exit_code") is None
+                else 502
+            )
+            raise HTTPException(status, f"{reason}: {tail}" if tail else reason)
+        return {
+            "board_key": board_key,
+            "output_tail": result.get("output_tail", ""),
+            "data": result.get("data") or {},
+        }
+
+    @app.post("/api/boards/{board_key:path}/retro/apply")
+    async def retro_apply(board_key: str, request: RetroApply):
+        """retro_apply: tk.sh retro-apply marks proposals; the proposals and the
+        regenerated retro-results.md come back in data."""
+        return await board_rpc_result(
+            board_key, "retro_apply", {"mark": request.mark, "ids": request.ids}
+        )
+
+    @app.post("/api/boards/{board_key:path}/retro")
+    async def run_retro(board_key: str):
+        """run_retro: tk.sh retro | claude ticket-retro | tk.sh retro-save, the
+        saved proposals back in data (a long rpc)."""
+        return await board_rpc_result(board_key, "run_retro", {})
+
+    @app.post("/api/boards/{board_key:path}/sweep")
+    async def sweep_board(board_key: str):
+        """sweep_board: removes this board's removable leftovers; data holds the
+        removed and skipped lists."""
+        return await board_rpc_result(board_key, "sweep_board", {})
 
     @app.post("/api/boards/{board_key:path}/memory", status_code=202)
     async def propose_memory(board_key: str, request: MemoryProposal):

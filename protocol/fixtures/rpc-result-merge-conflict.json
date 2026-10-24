@@ -1,0 +1,29 @@
+{
+  "type": "rpc_result",
+  "id": "r-0007",
+  "ok": false,
+  "exit_code": 10,
+  "output_tail": "GATE pr PASS #41\nGATE ready PASS\nGATE mergeable FAIL conflicts with main — send ticket-merger\n",
+  "reason": "conflicts: the PR conflicts with the base branch; ticket-merger is resolving it",
+  "data": {
+    "gates": [
+      {
+        "gate": "pr",
+        "status": "pass",
+        "detail": "#41"
+      },
+      {
+        "gate": "ready",
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "gate": "mergeable",
+        "status": "fail",
+        "detail": "conflicts with main — send ticket-merger"
+      }
+    ],
+    "merged": false,
+    "resolving": true
+  }
+}

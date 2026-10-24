@@ -19,9 +19,12 @@ import type {
   BoardsResponse,
   HubSettings,
   PolicyEdit,
+  RetroData,
+  RetroMark,
   ReportResponse,
   SchedulerEntry,
   SentRpc,
+  SweepData,
   TicketType,
   UiEvent,
 } from "../protocol/types";
@@ -43,6 +46,9 @@ export interface HubClientDeps {
 }
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
+
+/** What a diff is taken against: the ticket's base sha (default) or its worktree's HEAD. */
+export type DiffAgainst = "base" | "head";
 
 /** The ticket RPCs with no params besides the ticket. */
 export type ShipMethod = "open_pr" | "ssh_push" | "merge_pr" | "verify_landed" | "resolve_ticket";
@@ -123,6 +129,22 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     return `HTTP ${res.status}`;
   }
 
+  /** POST (JSON body optional) to a route that answers `{data}`: the data, else a toast `<what> failed: <why>` and null. */
+  async function postData<T>(url: string, body: unknown, what: string): Promise<T | null> {
+    try {
+      const res = await doFetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (res.ok) return ((await res.json()) as { data: T }).data;
+      store.toast({ kind: "error", text: `${what} failed: ${await errorText(res)}` });
+    } catch (err) {
+      store.toast({ kind: "error", text: `${what} failed: ${(err as Error).message}` });
+    }
+    return null;
+  }
+
   /** POST a JSON body; true on 2xx, else a toast `<what> failed: <why>` and false. */
   async function postToast(url: string, body: unknown, what: string): Promise<boolean> {
     try {
@@ -176,11 +198,18 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     return (await res.json()) as T;
   }
 
-  /** The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff. */
-  function diff(boardKey: string, nn: string): Promise<DiffListResponse>;
-  function diff(boardKey: string, nn: string, file: string): Promise<DiffFileResponse>;
-  function diff(boardKey: string, nn: string, file?: string) {
-    return getJson(ticketUrl(boardKey, nn, "diff") + (file === undefined ? "" : `?file=${encodeURIComponent(file)}`));
+  /**
+   * The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff.
+   * `against: "head"` diffs against the worktree's HEAD instead (a resolved merge, against the branch's previous head).
+   */
+  function diff(boardKey: string, nn: string, file?: undefined, against?: DiffAgainst): Promise<DiffListResponse>;
+  function diff(boardKey: string, nn: string, file: string, against?: DiffAgainst): Promise<DiffFileResponse>;
+  function diff(boardKey: string, nn: string, file?: string, against?: DiffAgainst) {
+    const query = [
+      ...(file === undefined ? [] : [`file=${encodeURIComponent(file)}`]),
+      ...(against === "head" ? ["against=head"] : []),
+    ];
+    return getJson(ticketUrl(boardKey, nn, "diff") + (query.length ? `?${query.join("&")}` : ""));
   }
 
   return {
@@ -219,6 +248,14 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
       if (!reason.trim()) return false;
       return (await ticketAction("Resolve", boardKey, nn, "resolve_nocode", { reason: reason.trim() })) !== null;
     },
+    /** Commit merge: merge-conflict.sh finish commits the resolved merge and pushes it; only after the sheet's confirm. */
+    async finishConflict(boardKey: string, nn: string): Promise<boolean> {
+      return (await ticketAction("Commit merge", boardKey, nn, "finish_conflict", { confirm: true })) !== null;
+    },
+    /** Abort merge: merge-conflict.sh abort puts the worktree back; the PR still conflicts. */
+    async abortConflict(boardKey: string, nn: string): Promise<boolean> {
+      return (await ticketAction("Abort merge", boardKey, nn, "abort_conflict", {})) !== null;
+    },
     /** One poll of the agent's pane; its lines arrive as a pane_tail rpc_result. Rejects when not sent. */
     async paneTail(boardKey: string, nn: string, lines: number): Promise<void> {
       await post<ActionResponse>(ticketUrl(boardKey, nn, "action"), { method: "pane_tail", params: { lines } });
@@ -241,6 +278,18 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     /** 📄 Board's ↻ Refresh: a board-brief synthesis run now; true when the hub took it. The brief itself arrives with the board's next snapshot. */
     async refreshBrief(boardKey: string): Promise<boolean> {
       return (await action("Board brief", boardUrl(boardKey, "brief"))) !== null;
+    },
+    /** Retro: ticket-retro's proposals for the board (a long wait); null, with a toast, when refused or failed. */
+    async runRetro(boardKey: string): Promise<RetroData | null> {
+      return postData<RetroData>(boardUrl(boardKey, "retro"), undefined, "Retro");
+    },
+    /** Marks proposals (tk.sh retro-apply); the proposals with their marks and the regenerated results come back. */
+    async applyRetro(boardKey: string, mark: RetroMark, ids: string[]): Promise<RetroData | null> {
+      return postData<RetroData>(boardUrl(boardKey, "retro/apply"), { mark, ids }, "Retro mark");
+    },
+    /** Sweep: removes this board's removable leftovers; what it removed and skipped come back. */
+    async sweepBoard(boardKey: string): Promise<SweepData | null> {
+      return postData<SweepData>(boardUrl(boardKey, "sweep"), undefined, "Sweep");
     },
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {

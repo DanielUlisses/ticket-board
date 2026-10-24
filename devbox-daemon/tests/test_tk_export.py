@@ -107,6 +107,18 @@ def test_finds_every_board_under_the_glob_and_merges_memory_hub_meta_and_usage(b
     )
 
 
+def test_a_boards_saved_retro_proposals_ride_along_in_its_snapshot(box):
+    board = box.board("alpha", "tk-hub", [row("01", "done")])
+    box.board("alpha", "bare", [row("01", "done")])
+    (board / "retro").mkdir()
+    (board / "retro" / "proposals.md").write_text("### M1 rule\n")
+
+    boards = boards_by_key(snapshot(box))
+
+    assert boards["dev-test/alpha/tk-hub"]["retro_proposals_md"] == "### M1 rule\n"
+    assert boards["dev-test/alpha/bare"]["retro_proposals_md"] is None
+
+
 def test_a_board_with_nothing_but_tickets_gets_defaults_and_herdr_down_is_reported(box):
     box.board("alpha", "bare", [row("01")])
 

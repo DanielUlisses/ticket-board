@@ -5,6 +5,7 @@ import type { ActivityEvent, Board, Column, Ticket } from "../protocol/types";
 import { Glyph } from "./Glyph";
 import { LaunchControl } from "./LaunchControl";
 import { Markdown } from "./Markdown";
+import { MergeConflictSection } from "./MergeConflict";
 import { PaneTail } from "./PaneTail";
 import { ReviewTab } from "./ReviewTab";
 import { Relay } from "./Relay";
@@ -16,7 +17,11 @@ import styles from "./TicketSheet.module.css";
 export { PANE_MS } from "./PaneTail";
 
 /** The hub calls the sheet makes. */
-export type DetailApi = Pick<HubClient, "activity" | "diff" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone" | "ship" | "resolveNoCode">;
+export type DetailApi = Pick<
+  HubClient,
+  | "activity" | "diff" | "report" | "launch" | "say" | "paneTail" | "proposeMemory" | "refine" | "setTaskDone"
+  | "ship" | "resolveNoCode" | "finishConflict" | "abortConflict"
+>;
 
 /** Columns where the ticket has an agent: relay to it, tail its pane. */
 const WITH_AGENT: ReadonlySet<Column> = new Set(["needs", "working", "review", "human"]);
@@ -354,6 +359,8 @@ function Sheet({ board, ticket, api }: { board: Board; ticket: Ticket; api: Deta
             "aria-labelledby": `${tabsId}-tab-overview`,
           })}
         >
+          <MergeConflictSection board={board} ticket={ticket} load={api.diff} />
+
           <section className={styles.card} aria-label="Synthesis">
             <h3 className={styles.h}>Synthesis</h3>
             {ticket.summary ? (

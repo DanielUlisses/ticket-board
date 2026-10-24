@@ -16,7 +16,7 @@ from hub_server import NAME, PROTOCOL_VERSION, protocol
 from hub_server.store import Store, now
 
 # board.md, Protocol: 10 min for synthesis RPCs, 2 min for everything else.
-LONG_RPCS = {"refine_with_comment", "refresh_board_brief", "run_retro"}
+LONG_RPCS = {"refine_with_comment", "refresh_board_brief", "run_retro", "sweep_board"}
 LONG_TIMEOUT = 600.0
 TIMEOUT = 120.0
 UI_SEND_TIMEOUT = 5.0
@@ -28,7 +28,7 @@ SYNTHESIS_FIELDS = ("type", "board_key", "nn", "backend", "at", "error")
 TICKET_ACTIONS = (
     "launch_ticket", "say_agent", "pane_tail",
     "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
-    "resolve_ticket",
+    "resolve_ticket", "resolve_conflict", "finish_conflict", "abort_conflict",
 )  # fmt: skip
 # tk.sh launch --type values (ticket-skill's branch prefixes).
 TICKET_TYPES = ("feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci")

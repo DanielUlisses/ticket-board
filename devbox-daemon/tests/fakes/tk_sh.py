@@ -20,7 +20,12 @@ agent) or 0. `show <board> <NN> <lines>` prints the last <lines> lines of
 `<board>/pane.txt`, or exits 21 when `<board>/agent-gone` exists; it writes
 `<board>/show-stderr` to stderr, if there. The ship verbs `pr`, `push`, `merge`,
 `resolve` and `why` (`<verb> <board> <NN> [...]`) print `<board>/<verb>-out` and
-exit with `<board>/<verb>-exit` (0 when absent)."""
+exit with `<board>/<verb>-exit` (0 when absent), after `<board>/<verb>-slow` seconds.
+`retro <board>` prints
+`<board>/retro-out` (a canned line); `retro-save <board>` stores its stdin in
+`<board>/retro/proposals.md` and logs it as "stdin"; `retro-apply <board> <mark>
+<ids>...` appends `<mark> <id>` lines to `<board>/marks.txt` and writes a
+`<board>/retro-results.md` listing them."""
 
 import json
 import os
@@ -36,6 +41,8 @@ if log := os.environ.get("FAKE_TK_LOG"):
     entry = {"argv": args, "cwd": str(cwd), "pid": os.getpid()}
     if args[:1] == ["say"] and len(args) > 3 and Path(args[3]).is_file():
         entry["message"] = Path(args[3]).read_text()
+    if args[:1] == ["retro-save"]:
+        entry["stdin"] = sys.stdin.read()
     with open(log, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
@@ -139,10 +146,31 @@ elif verb in ("pr", "push", "merge", "resolve", "why"):
             file=sys.stderr,
         )
         sys.exit(1)
+    if (board / f"{verb}-slow").exists():
+        time.sleep(float((board / f"{verb}-slow").read_text()))
     out = board / f"{verb}-out"
     print(out.read_text() if out.exists() else f"{verb.upper()} ok")
     code = board / f"{verb}-exit"
     sys.exit(int(code.read_text()) if code.exists() else 0)
+elif verb == "retro":
+    out = Path(args[1]) / "retro-out"
+    if os.environ.get("FAKE_TK_STDERR"):
+        print(os.environ["FAKE_TK_STDERR"], file=sys.stderr)
+    print(out.read_text() if out.exists() else "RETRO board b")
+elif verb == "retro-save":
+    board = Path(args[1])
+    (board / "retro").mkdir(exist_ok=True)
+    (board / "retro" / "proposals.md").write_text(entry["stdin"])
+    print(f"SAVED {board / 'retro' / 'proposals.md'}")
+elif verb == "retro-apply":
+    board, mark = Path(args[1]), args[2]
+    with open(board / "marks.txt", "a") as f:
+        f.writelines(f"{mark} {i}\n" for i in args[3:])
+    (board / "retro-results.md").write_text(
+        "# Retro results\n\n" + (board / "marks.txt").read_text()
+    )
+    print(f"MARKED {' '.join(f'{i}={mark}' for i in args[3:])}")
+    print(f"WROTE {board / 'retro-results.md'}")
 elif verb == "policy" and has_policy:
     board = Path(args[1])
     if (board / "policy-fails").exists():

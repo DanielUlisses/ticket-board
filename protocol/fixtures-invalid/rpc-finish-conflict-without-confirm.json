@@ -1,0 +1,9 @@
+{
+  "type": "rpc",
+  "id": "r-0032",
+  "method": "finish_conflict",
+  "params": {
+    "board_key": "dev-daniel/ticket-board/tk-hub",
+    "nn": "27"
+  }
+}

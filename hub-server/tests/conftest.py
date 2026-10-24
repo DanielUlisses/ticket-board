@@ -33,6 +33,8 @@ REST_DEFS = [
     ("POST", re.compile(r"^/api/boards/.+/tickets/[^/]+/comment$"), "rest_refine"),
     ("POST", re.compile(r"^/api/boards/.+/tickets/[^/]+/tasks$"), "rest_set_task_done"),
     ("POST", re.compile(r"^/api/boards/.+/memory$"), "rest_propose_memory"),
+    ("POST", re.compile(r"^/api/boards/.+/retro(/apply)?$"), "rest_board_rpc"),
+    ("POST", re.compile(r"^/api/boards/.+/sweep$"), "rest_board_rpc"),
     ("GET", re.compile(r"^/api/settings$"), "rest_settings"),
     ("POST", re.compile(r"^/api/settings$"), "rest_settings"),
     ("GET", re.compile(r"^/api/scheduler$"), "rest_scheduler"),

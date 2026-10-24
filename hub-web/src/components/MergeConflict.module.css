@@ -1,0 +1,28 @@
+/* The sheet's merge-conflict section: ticket-merger's outcome and the merge's diff. */
+.state {
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.state[data-state="failed"] {
+  color: var(--icon-urgent);
+}
+.files {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.tail {
+  margin: 4px 0 0;
+  max-height: 200px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.confirm {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}

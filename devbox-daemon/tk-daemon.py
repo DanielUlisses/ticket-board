@@ -71,6 +71,9 @@ synthesis_started / synthesis_finished / synthesis_failed. One run per ticket at
 A `running` status with no run behind it (the daemon was killed) becomes failed,
 "interrupted", at the next export. TK_AGY_TIMEOUT (seconds > 0, read at start)
 overrides `synthesis.timeout`; an invalid value of either is ignored with a warning.
+Merge conflicts: merge_pr's exit 10 sends ticket-merger (Daemon.resolve) through
+merge-conflict.sh (see merge_conflict_sh); its state is the ticket's hub-meta
+`merge_conflict`. finish_conflict (confirm: true) is the only commit and push.
 SIGTERM / SIGINT stop the daemon (closing the connection with 1001) and kill a
 running export; launches still queued then refuse ("daemon stopping") without
 running tk.sh, and those already in it get shutdown_grace_s to finish before
@@ -153,11 +156,15 @@ POLICY_WRITABLE = {
     "auto_merge": lambda v: isinstance(v, bool),
     "night_shift": lambda v: isinstance(v, bool),
 }
-SYNTHESIS_RPCS = frozenset({"refine_with_comment", "refresh_board_brief", "run_retro"})
+SYNTHESIS_RPCS = frozenset(
+    {"refine_with_comment", "refresh_board_brief", "run_retro", "sweep_board"}
+)  # sweep_board: not synthesis, but as long, and cancelling it would kill a remove
 SYNTHESIS_COLUMNS = frozenset({"needs", "human", "pr"})  # a move into one synthesizes
 SHOW_LINES = "180"  # tk.sh show <board> <NN> 180, part of the synthesis context
 FAILED = re.compile(r"^tk-export: failed (\S+)(?: (/.*))?$", re.MULTILINE)
 RESUME = re.compile(r"^tk-export: resume ([0-9]+)$", re.MULTILINE)
+SWEEP_HOLDS = ("dirty", "dirty-unknown", "agent-busy", "self")  # why a row is kept
+SWEEP_REFUSALS = {2: "dirty", 3: "agent-busy", 4: "unmerged"}  # sweep.sh remove exits
 TAIL = 4000  # characters of output_tail
 PANE = 200_000  # characters of a pane_tail's data.pane
 # RPCs that change nothing: no re-export after them (pane_tail is polled).
@@ -185,6 +192,33 @@ MERGE_EXITS = {
     12: "gate failed: the PR is not ready to merge",
 }
 SHIP_EXITS = {5: "tk.sh wants the claude runner for this verb (exit 5)"}
+MERGER_SUMMARY = 20_000  # characters of the agent's answer kept as the summary
+
+
+def merger_argv(script: str, wt: str, prompt: str) -> list[str]:
+    """ticket-merger, sent by the daemon when tk.sh merge exits 10 (Daemon.resolve).
+    Headless (`claude -p`) nothing prompts, so it gets a scoped allow-list, never a
+    permission-skip flag or mode: read anything; edit only in the ticket's worktree;
+    stage, diff, status and log in git; merge-conflict.sh status. Committing, pushing,
+    finish and abort are denied outright (finish is the developer's Commit merge).
+    The prompt goes right after -p: the tool lists are variadic, and would swallow
+    an argument after them."""
+    wt = wt.rstrip("/")
+    allowed = [
+        "Read", "Grep", "Glob", f"Edit(/{wt}/**)", f"Write(/{wt}/**)",
+        "Bash(git add *)", "Bash(git diff)", "Bash(git diff *)", "Bash(git status)",
+        "Bash(git status *)", "Bash(git log *)", f"Bash({script} status *)",
+    ]  # fmt: skip
+    denied = [
+        "Bash(git commit *)", "Bash(git push *)", "Bash(git merge *)",
+        "Bash(git reset *)", "Bash(git rebase *)", "Bash(git stash *)",
+        "Bash(git checkout *)", "Bash(git switch *)",
+        f"Bash({script} start *)", f"Bash({script} finish *)", f"Bash({script} abort *)",
+    ]  # fmt: skip
+    return ["claude", "-p", prompt, "--agent", "ticket-merger", "--model", "sonnet",
+            "--allowedTools", *allowed, "--disallowedTools", *denied]  # fmt: skip
+
+
 GATE_LINE = re.compile(r"^GATE (\w+) (PASS|FAIL)\b ?(.*)$")
 
 log = logging.getLogger("tk-daemon")
@@ -205,6 +239,29 @@ def tk_sh() -> str:
     if shutil.which("tk.sh"):
         return "tk.sh"
     return str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
+
+
+def sweep_sh() -> str:
+    """sweep.sh as tk_sh() finds tk.sh: $SWEEP_SH, sweep.sh on PATH, the installed skill's."""
+    if os.environ.get("SWEEP_SH"):
+        return os.environ["SWEEP_SH"]
+    if shutil.which("sweep.sh"):
+        return "sweep.sh"
+    return str(Path.home() / ".claude/skills/sweep-tickets/scripts/sweep.sh")
+
+
+def merge_conflict_sh() -> str:
+    """ticket-skill's merge-conflict.sh: $TK_MERGE_CONFLICT, else the one beside
+    tk.sh (as tk_sh() finds it, symlinks followed), else the installed skill's.
+    An absolute path: ticket-merger's prompt names it."""
+    if os.environ.get("TK_MERGE_CONFLICT"):
+        return os.environ["TK_MERGE_CONFLICT"]
+    tk = shutil.which(tk_sh())
+    if tk and (beside := Path(tk).resolve().with_name("merge-conflict.sh")).is_file():
+        return str(beside)
+    return str(
+        Path.home() / ".claude/skills/implement-tickets/scripts/merge-conflict.sh"
+    )
 
 
 class Schema:
@@ -610,21 +667,21 @@ async def last_sync(starting: set[str] = frozenset()) -> dict | None:
 
 async def run_cmd(
     argv: list[str], env: dict | None = None, cwd: str | None = None,
-    errors: str = "replace",
+    errors: str = "replace", stdin: str | None = None,
 ) -> tuple[int, str, str]:  # fmt: skip
-    """Run a command in its own session; cancelling (a timeout, SIGTERM) kills
-    everything in that session."""
+    """Run a command in its own session (stdin: /dev/null, or the text given);
+    cancelling (a timeout, SIGTERM) kills everything in that session."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
         env=env,
         cwd=cwd,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     try:
-        out, err = await proc.communicate()
+        out, err = await proc.communicate(None if stdin is None else stdin.encode())
     except asyncio.CancelledError:
         agy_runner.kill_session(proc.pid)
         await proc.wait()
@@ -751,6 +808,9 @@ class Daemon:
         self.launches: set[asyncio.Task] = set()  # launches running, for shutdown
         self.board_locks: dict[str, asyncio.Lock] = {}  # one launch per board at once
         self.stopping = False  # set on SIGTERM / SIGINT: queued launches never start
+        # (board key, nn) where ticket-merger runs now: one at a time per ticket
+        self.resolving: set[tuple[str, str]] = set()
+        self.resolvers: set[asyncio.Task] = set()  # their tasks, for shutdown
         self.rpcs = {
             "rescan_boards": self.rpc_rescan_boards,
             "launch_ticket": self.rpc_launch_ticket,
@@ -762,6 +822,9 @@ class Daemon:
             "refresh_board_brief": self.rpc_refresh_board_brief,
             "set_task_done": self.rpc_set_task_done,
             "propose_memory": self.rpc_propose_memory,
+            "run_retro": self.rpc_run_retro,
+            "retro_apply": self.rpc_retro_apply,
+            "sweep_board": self.rpc_sweep_board,
             "open_pr": functools.partial(self.rpc_ship, "open_pr"),
             "ssh_push": functools.partial(self.rpc_ship, "ssh_push"),
             "merge_pr": functools.partial(self.rpc_ship, "merge_pr"),
@@ -770,6 +833,9 @@ class Daemon:
             "verify_landed": self.rpc_verify_landed,
             "get_diff": self.rpc_get_diff,
             "sync_box": self.rpc_sync_box,
+            "resolve_conflict": self.rpc_resolve_conflict,
+            "finish_conflict": self.rpc_finish_conflict,
+            "abort_conflict": self.rpc_abort_conflict,
         }
 
     # ---- export --------------------------------------------------------------------
@@ -926,11 +992,14 @@ class Daemon:
             raise RpcRefused(f"unknown board {params.get('board_key')!r} on this box")
         return board
 
-    async def tk(self, board: dict, *args: str) -> tuple[int, str]:
-        """tk.sh <verb> <board path> ... from the board's main checkout: (exit, output)."""
+    async def tk(
+        self, board: dict, *args: str, script: str | None = None
+    ) -> tuple[int, str]:
+        """tk.sh (or `script`, merge-conflict.sh) <verb> <board path> ... from the
+        board's main checkout: (exit, output)."""
         verb, *rest = args
         rc, out, err = await run_cmd(
-            [tk_sh(), verb, board["board_path"], *rest], cwd=board["root"]
+            [script or tk_sh(), verb, board["board_path"], *rest], cwd=board["root"]
         )
         return rc, out + err
 
@@ -1115,11 +1184,17 @@ class Daemon:
         cols: tuple[str, ...] | None,
         *args: str,
         landed: bool = False,
+        script: str | None = None,
+        check: typing.Callable[[], None] | None = None,
+        after: typing.Callable[[int, str], object] | None = None,
     ) -> tuple[int, str]:
-        """tk.sh <args> under the board's queue and flock, after re-checking the
-        ticket is in one of `cols` (any when None) and, with `landed`, that its
-        landed verdict is yes:*. The work runs in a task of
-        its own: the rpc timeout answers the hub but never kills a merge midway."""
+        """tk.sh (or `script`) <args> under the board's queue and flock, after
+        re-checking the ticket is in one of `cols` (any when None), with `landed`
+        that its landed verdict is yes:*, and calling `check` (it raises RpcRefused
+        to refuse). The work runs in a task of
+        its own: the rpc timeout answers the hub but never kills a merge midway.
+        `after(exit, output)` runs in that task once the queue is free, so it also
+        runs for work that outlived its rpc."""
 
         async def work() -> tuple[int, str]:
             # Ship verbs share the per-board queue with launches: one waits
@@ -1144,9 +1219,14 @@ class Daemon:
                         raise RpcRefused(
                             f"ticket {nn} is not landed (landed: {found.get('landed')})"
                         )
-                    return await self.tk(board, *args)
+                    if check is not None:
+                        check()
+                    done = await self.tk(board, *args, script=script)
                 finally:
                     lock.close()
+            if after is not None:
+                after(*done)
+            return done
 
         task = asyncio.create_task(work())
         self.launches.add(task)
@@ -1171,9 +1251,15 @@ class Daemon:
             if not reason:
                 raise RpcRefused("resolve without code needs a reason")
             extra = ["--no-code", reason]
+        merge = method == "merge_pr"
         rc, out = await self.locked_tk(
-            board, nn, cols, verb, nn, *extra, landed=method == "resolve_ticket"
-        )
+            board, nn, cols, verb, nn, *extra, landed=method == "resolve_ticket",
+            # no merge while ticket-merger runs, or its merge waits for review
+            check=(lambda: self.refuse_while_conflicted(board, nn)) if merge else None,
+            # exit 10 sends ticket-merger, even when the merge outlived this rpc
+            after=(lambda rc, _: rc == 10 and self.start_resolver(board, nn))
+            if merge else None,
+        )  # fmt: skip
         result = {"ok": rc == 0, "exit_code": rc, "output_tail": out}
         if method == "merge_pr":
             merged = any(line.startswith("MERGED ") for line in out.splitlines())
@@ -1183,7 +1269,10 @@ class Daemon:
                 if (m := GATE_LINE.match(line.strip()))
             ]
             result["data"] = {"gates": gates, "merged": merged}
-            if rc in MERGE_EXITS:
+            if rc == 10:  # ticket-merger resolves it (started by `after`)
+                result["data"]["resolving"] = True
+                result["reason"] = f"{MERGE_EXITS[rc]}; ticket-merger is resolving it"
+            elif rc in MERGE_EXITS:
                 result["reason"] = MERGE_EXITS[rc]
             elif merged and rc != 0:
                 tail = out.strip().splitlines()
@@ -1206,6 +1295,257 @@ class Daemon:
             elif line.startswith("OPEN PR "):
                 data["open_pr"] = line[len("OPEN PR ") :].strip()
         return {"ok": rc == 0, "exit_code": rc, "output_tail": out, "data": data}
+
+    # ---- merge conflicts: ticket-merger, then the developer's decision ---------------
+    # The ticket's hub-meta `merge_conflict` says where it stands: resolving (the agent
+    # runs), review (resolved and staged, waiting for Commit merge / Abort), failed
+    # (the merge was aborted: reason, output_tail), committed, aborted, up_to_date.
+    # Only finish_conflict, the developer's click, ever commits and pushes.
+    def merge_conflict(self, board: dict, nn: str) -> dict:
+        """The ticket's hub-meta merge_conflict, {} when none."""
+        mc = ticket_meta(read_meta(Path(board["board_path"])), nn).get("merge_conflict")
+        return mc if isinstance(mc, dict) else {}
+
+    def record_conflict(self, board: dict, nn: str, fresh: bool = False, **fields):
+        """Update (or, `fresh`, replace) the ticket's hub-meta merge_conflict."""
+        path = Path(board["board_path"])
+        meta = read_meta(path)
+        entry = ticket_meta(meta, nn)
+        old = entry.get("merge_conflict")
+        entry["merge_conflict"] = {
+            **(old if isinstance(old, dict) and not fresh else {}),
+            **fields,
+        }
+        write_meta(path, meta)
+
+    def refuse_while_conflicted(self, board: dict, nn: str):
+        """No merge (nor a second resolver) while ticket-merger runs or its resolved
+        merge waits for the developer."""
+        if (board["key"], nn) in self.resolving:
+            raise RpcRefused(
+                f"ticket {nn} is resolving a merge conflict (ticket-merger)"
+            )
+        if self.merge_conflict(board, nn).get("state") == "review":
+            raise RpcRefused(
+                f"ticket {nn} has a resolved merge to review: Commit merge or Abort it"
+            )
+
+    def start_resolver(self, board: dict, nn: str) -> bool:
+        """Resolve the ticket's conflict in a task of its own (it outlives the rpc);
+        False when one already runs for it."""
+        slot = (board["key"], nn)
+        if slot in self.resolving or self.stopping:
+            return False
+        self.resolving.add(slot)
+        try:
+            self.record_conflict(
+                board, nn, fresh=True, state="resolving", started_at=utc_now(),
+                finished_at=None, base=board.get("base") or None, files=[],
+                summary=None, reason=None, output_tail=None,
+            )  # fmt: skip
+        except BaseException:
+            self.resolving.discard(slot)
+            raise
+        task = asyncio.create_task(self.resolve(board, nn))
+        self.resolvers.add(task)
+        task.add_done_callback(self.resolvers.discard)
+        return True
+
+    @staticmethod
+    def merger_prompt(script: str, board: dict, ticket: dict, files: list[str]) -> str:
+        """ticket-merger's brief (agents/ticket-merger.md): the script, board, NN, the
+        ticket's intent, and that start already ran and nobody approved a commit."""
+        nn, path, base = ticket["nn"], board["board_path"], board.get("base") or "?"
+        listed = "\n".join(f"  {f}" for f in files)
+        return (
+            f"Resolve the merge conflict of ticket {nn} ({ticket.get('title', '')}) "
+            f"on board {path}.\n"
+            f"merge-conflict.sh: {script}\nBoard: {path}\nNN: {nn}\nBase: {base}\n"
+            f"Ticket file (its intent): {ticket.get('file') or '?'}\n\n"
+            f"The tk-hub daemon already ran `{script} start {path} {nn}`: {base} is "
+            f"merged into this worktree, not committed, and these files conflict:\n"
+            f"{listed}\n\n"
+            "Do not run start again. Resolve them as your first call says (steps 2 to "
+            f"5): `{script} status {path} {nn}` must end with UNMERGED none and "
+            "MARKERS none. Return each file and how you resolved it, anything you "
+            "refused to choose, and the checks you ran with what they printed.\n"
+            "The developer has NOT approved a commit: never run finish or abort, never "
+            "commit or push. They review the merge in the hub and commit it from there."
+        )
+
+    async def resolve(self, board: dict, nn: str):
+        """merge-conflict.sh start; on conflicts ticket-merger in the ticket's worktree
+        (bounded by rpc_synthesis_timeout_s), then status. Resolved: the ticket comes
+        back for review (state review) and a synthesis run covers the merge. Anything
+        else, after start began a merge: abort, state failed with the why. UP TO DATE
+        (the forge's conflict flag was stale): the merge is retried once. Stopped while
+        start runs (it carries on, shielded): left `resolving`, so the next daemon's
+        first export aborts it (fail_interrupted_resolve)."""
+        slot, script = (board["key"], nn), merge_conflict_sh()
+        merging = False  # start began a merge: abort it unless it ends in review
+        starting = False  # start is running: its outcome is unknown when stopped
+        fields: dict | None = {}
+        try:
+            ticket = await self.row(board, nn)
+            wt = ticket.get("worktree") or ""
+            starting = True
+            rc, out = await self.locked_tk(
+                board, nn, ("pr",), "start", nn, script=script
+            )
+            starting = False
+            if rc == 0 and out.lstrip().startswith("UP TO DATE"):
+                rc2, out2 = await self.locked_tk(board, nn, ("pr",), "merge", nn)
+                retried = "merged" if rc2 == 0 else MERGE_EXITS.get(rc2, f"exit {rc2}")
+                fields = {"state": "up_to_date", "output_tail": out2[-TAIL:],
+                          "reason": "the branch already has the base; the merge was "
+                                    f"retried: {retried}"}  # fmt: skip
+            elif rc not in (0, 2):
+                fields = {"state": "failed", "output_tail": out[-TAIL:],
+                          "reason": f"merge-conflict.sh start refused (exit {rc})"}  # fmt: skip
+            else:
+                merging = True
+                files = [ln.strip() for ln in out.splitlines() if ln.startswith("  ")]
+                fields = {"files": files}
+                summary, why = f"No conflicts to resolve:\n{out}", None
+                said = summary  # what the agent printed, stderr too: the failure's tail
+                if rc == 2:
+                    limit = self.cfg["rpc_synthesis_timeout_s"]
+                    prompt = self.merger_prompt(script, board, ticket, files)
+                    head = await self.head(wt)
+                    try:
+                        arc, aout, aerr = await asyncio.wait_for(
+                            run_cmd(merger_argv(script, wt, prompt), cwd=wt), limit
+                        )
+                        summary, said = aout[-MERGER_SUMMARY:], aout + aerr
+                        if arc != 0:
+                            why = f"ticket-merger failed (exit {arc})"
+                        elif head and (now := await self.head(wt)) != head:
+                            why = (
+                                "ticket-merger committed against instructions (HEAD "
+                                f"{head[:12]} -> {(now or '?')[:12]})"
+                            )
+                    except TimeoutError:
+                        said, why = "", f"ticket-merger timed out after {limit:g}s"
+                src, sout = await self.tk(board, "status", nn, script=script)
+                if why is None and not (
+                    src == 0
+                    and re.search(r"^UNMERGED none$", sout, re.MULTILINE)
+                    and re.search(r"^MARKERS none$", sout, re.MULTILINE)
+                ):
+                    why = "the merge is still unresolved"
+                if why is None:
+                    fields |= {"state": "review", "summary": summary,
+                               "output_tail": sout[-TAIL:]}  # fmt: skip
+                    merging = False
+                else:
+                    fields |= {"state": "failed", "reason": f"{why}; the merge was aborted",
+                               "output_tail": f"{said}\n{sout}"[-TAIL:]}  # fmt: skip
+        except asyncio.CancelledError:  # the daemon stopping
+            fields = (
+                None  # left resolving: the next daemon aborts whatever start did
+                if starting
+                else {"state": "failed",
+                      "reason": "interrupted: the daemon stopped mid-resolve"}
+            )  # fmt: skip
+            raise
+        except Exception as e:  # noqa: BLE001 — recorded, shown on the ticket
+            log.warning("resolving %s %s: %s: %s", *slot, type(e).__name__, e)
+            fields = {"state": "failed", "reason": f"resolver error: {e}"}
+        finally:
+            if merging:  # never leave a half-merged worktree
+                with contextlib.suppress(Exception):
+                    arc, aout = await self.tk(board, "abort", nn, script=script)
+                    log.info("aborted the merge of %s %s: exit %s", *slot, arc)
+                    if arc != 0:
+                        fields["reason"] = (
+                            f"{fields.get('reason')}; abort failed (exit {arc}): {aout.strip()[-200:]}"
+                        )
+            if fields is not None:
+                with contextlib.suppress(Exception):
+                    self.record_conflict(board, nn, **fields, finished_at=utc_now())
+            self.resolving.discard(slot)
+        if fields.get("state") == "review":
+            self.spawn_synthesis(
+                board["key"], nn, comment=
+                "ticket-merger merged the base into this branch to resolve a conflict; "
+                "the merge is staged, not committed, and waits for the developer's "
+                "review. Cover the merged result. Its answer:\n"
+                + fields.get("summary", ""),
+            )  # fmt: skip
+        if self.ws is not None:
+            with contextlib.suppress(Exception):
+                await self.sync(self.ws, full=False)
+
+    async def head(self, wt: str) -> str | None:
+        """The worktree's HEAD sha; None when git can't say."""
+        with contextlib.suppress(OSError):
+            rc, out, _ = await self.git_run(wt, "rev-parse", "--verify", "HEAD")
+            if rc == 0:
+                return out.strip()
+        return None
+
+    async def rpc_resolve_conflict(self, ws, params: dict) -> dict:
+        """Send ticket-merger on a pr ticket's conflict (merge_pr does it on exit 10)."""
+        board, nn = self.board(params), params["nn"]
+        self.refuse_while_conflicted(board, nn)
+        if (col := await self.col(board, nn)) != "pr":
+            raise RpcRefused(f"ticket {nn} is {col}, not pr")
+        self.start_resolver(board, nn)
+        return {"ok": True, "exit_code": 0,
+                "output_tail": f"ticket-merger is resolving {nn}'s conflict"}  # fmt: skip
+
+    def conflict_in_review(self, board: dict, nn: str, also: tuple[str, ...] = ()):
+        """Refuses unless the ticket's resolved merge waits for the developer (or its
+        merge_conflict state is one of `also`)."""
+        if (board["key"], nn) in self.resolving:
+            raise RpcRefused(
+                f"ticket {nn} is resolving a merge conflict (ticket-merger)"
+            )
+        if self.merge_conflict(board, nn).get("state") not in ("review", *also):
+            raise RpcRefused(f"ticket {nn} has no resolved merge waiting for review")
+
+    async def rpc_finish_conflict(self, ws, params: dict) -> dict:
+        """Commit merge: merge-conflict.sh finish (commit the staged merge, push it,
+        never force), the only commit and push the hub causes; params.confirm is the
+        developer's explicit yes. Then the ticket is back to pr, its gates to re-run."""
+        board, nn = self.board(params), params["nn"]
+        rc, out = await self.locked_tk(
+            board, nn, ("pr",), "finish", nn, script=merge_conflict_sh(),
+            check=lambda: self.conflict_in_review(board, nn),
+        )  # fmt: skip
+        result = {"ok": rc == 0, "exit_code": rc, "output_tail": out}
+        if rc == 0 or "merge commit is made" in out:  # committed, pushed or not
+            reason = (
+                None if rc == 0 else "committed, but the push failed: push it by hand"
+            )
+            self.record_conflict(board, nn, state="committed", reason=reason,
+                                 output_tail=out[-TAIL:], finished_at=utc_now())  # fmt: skip
+            if reason:
+                result["reason"] = reason
+        else:
+            result["reason"] = (
+                "not committed: still unresolved, or changes outside the merge"
+                if rc == 4 else f"merge-conflict.sh finish failed (exit {rc})"
+            )  # fmt: skip
+            self.record_conflict(board, nn, reason=result["reason"],
+                                 output_tail=out[-TAIL:])  # fmt: skip
+        return result
+
+    async def rpc_abort_conflict(self, ws, params: dict) -> dict:
+        """Abort: merge-conflict.sh abort puts the worktree back; the ticket stays pr,
+        the conflict noted. Also on a failed resolve, whose own abort may have failed
+        (abort with no merge in progress changes nothing)."""
+        board, nn = self.board(params), params["nn"]
+        rc, out = await self.locked_tk(
+            board, nn, None, "abort", nn, script=merge_conflict_sh(),
+            check=lambda: self.conflict_in_review(board, nn, also=("failed",)),
+        )  # fmt: skip
+        if rc == 0:
+            self.record_conflict(
+                board, nn, state="aborted", finished_at=utc_now(), output_tail=out[-TAIL:],
+                reason="aborted by the developer: the PR still conflicts with the base",
+            )  # fmt: skip
+        return {"ok": rc == 0, "exit_code": rc, "output_tail": out}
 
     async def rpc_say_agent(self, ws, params: dict) -> dict:
         """tk.sh say, the message passed as a file (deleted after)."""
@@ -1429,7 +1769,8 @@ class Daemon:
 
     async def rpc_get_diff(self, ws, params: dict) -> dict:
         """The ticket's change: its worktree's uncommitted diff against its base
-        (untracked files as additions). Without `file`: data.files (path, status
+        (with against=head: against its HEAD, data.base that sha) (untracked files
+        as additions). Without `file`: data.files (path, status
         M/A/D/R, old_path on R, additions, deletions, binary; nested_repo on an
         untracked nested repo, listed with a trailing slash) and data.diff_hash;
         with it, that file's unified diff in data.diff, or a data.stub ("binary",
@@ -1441,6 +1782,11 @@ class Daemon:
         if not wt or not Path(wt).is_dir():
             # the hub maps these texts to a 409 (app.py diff_failure_status)
             raise RpcRefused(f"ticket {nn} has no worktree to diff")
+        if params.get("against") == "head":  # e.g. a merge in progress (ticket 34)
+            rc, out, err = await self.git_run(wt, "rev-parse", "--verify", "HEAD")
+            if rc != 0:
+                raise RpcRefused(f"git rev-parse HEAD failed: {err.strip()[-200:]}")
+            base = out.strip()
         if not base:
             raise RpcRefused(f"ticket {nn} has no base to diff against")
         if not re.fullmatch(r"[0-9a-f]{7,64}", base):
@@ -1847,6 +2193,10 @@ class Daemon:
                 except (OSError, ValueError) as e:
                     log.warning("hub-meta of %s: %s", b["key"], e)
             for t in b["tickets"]:
+                mc = t.get("merge_conflict")
+                if (isinstance(mc, dict) and mc.get("state") == "resolving"
+                        and (b["key"], t["nn"]) not in self.resolving):  # fmt: skip
+                    found |= self.fail_interrupted_resolve(b, t["nn"])
                 if (t.get("synthesis_status") != "running"
                         or (b["key"], t["nn"]) in self.synthesizing):  # fmt: skip
                     continue
@@ -1866,6 +2216,50 @@ class Daemon:
                 found = True
         return found
 
+    def fail_interrupted_resolve(self, board: dict, nn: str) -> bool:
+        """A `resolving` merge with no resolver behind it (the daemon stopped or was
+        killed mid-resolve, maybe while start ran): its merge is aborted under the
+        board's flock, in the background, then marked failed (never left half-merged).
+        Held as resolving meanwhile: no merge, no second cleanup. Always False: the
+        state changes when the abort is done, and that re-exports."""
+        slot = (board["key"], nn)
+        try:
+            if self.merge_conflict(board, nn).get("state") != "resolving":
+                return False  # a run finished since the export read it
+        except (OSError, ValueError) as e:
+            log.warning("hub-meta of %s: %s", board["key"], e)
+            return False
+        self.resolving.add(slot)
+        log.warning("resolving %s #%s was interrupted; aborting its merge", *slot)
+
+        async def cleanup():
+            why = "interrupted: the daemon stopped mid-resolve"
+            try:
+                rc, out = await self.locked_tk(
+                    board, nn, None, "abort", nn, script=merge_conflict_sh()
+                )
+                reason = (
+                    f"{why}; the merge was aborted" if rc == 0
+                    else f"{why}; abort failed (exit {rc}): {out.strip()[-200:]}"
+                )  # fmt: skip
+            except Exception as e:  # noqa: BLE001 — recorded, shown on the ticket
+                reason = f"{why}; abort failed: {e}"
+            try:
+                self.record_conflict(board, nn, state="failed", reason=reason,
+                                     finished_at=utc_now())  # fmt: skip
+            except (OSError, ValueError) as e:
+                log.warning("hub-meta of %s: %s", board["key"], e)
+            finally:
+                self.resolving.discard(slot)
+            if self.ws is not None:
+                with contextlib.suppress(Exception):
+                    await self.sync(self.ws, full=False)
+
+        task = asyncio.create_task(cleanup())
+        self.resolvers.add(task)
+        task.add_done_callback(self.resolvers.discard)
+        return False
+
     def still_wanted(self, key: str, nn: str, catch_up: bool) -> bool:
         """Whether a queued run is still due once it has the lock: the ticket is not in
         done, its board not archived; a catch-up also needs its status in hub-meta
@@ -1884,7 +2278,8 @@ class Daemon:
             return False  # unreadable hub-meta: do not retry blind
         return entry.get("synthesis_status", "none") == "none"
 
-    def spawn_synthesis(self, key: str, nn: str, catch_up: bool = False):
+    def spawn_synthesis(self, key: str, nn: str, catch_up: bool = False,
+                        comment: str = ""):
         if (key, nn) in self.synth_queued or (key, nn) in self.synthesizing:
             return  # already waiting or running: the export that found it again is moot
         self.synth_queued.add((key, nn))
@@ -1896,7 +2291,7 @@ class Daemon:
                     return
                 board, ticket = self.board_ticket({"board_key": key, "nn": nn})
                 with contextlib.suppress(agy_runner.SynthesisFailed):
-                    await self.synthesize(board, ticket, "")
+                    await self.synthesize(board, ticket, comment)
             if self.ws is not None:  # the hub sees the result now, not next tick
                 await self.sync(self.ws, full=False)
 
@@ -2191,6 +2586,115 @@ class Daemon:
             )
         return {"ok": True, "exit_code": 0, "output_tail": f"wrote {path}"}
 
+    def retro_data(self, board: dict) -> dict:
+        """The saved proposals and the regenerated results, as files on the box."""
+        path = Path(board["board_path"])
+        return {
+            "proposals_md": read_file(path / "retro" / "proposals.md"),
+            "results_md": read_file(path / "retro-results.md"),
+        }
+
+    async def rpc_run_retro(self, ws, params: dict) -> dict:
+        """The retro skill's own pipeline: tk.sh retro | claude -p --agent
+        ticket-retro | tk.sh retro-save. Only once every ticket is done."""
+        board = self.board(params)
+        open_ = [t["nn"] for t in board.get("tickets") or [] if t.get("col") != "done"]
+        if open_:
+            raise RpcRefused(
+                f"retro needs every ticket done: {' '.join(open_)} not done"
+            )
+        rc, gathered, err = await run_cmd(
+            [tk_sh(), "retro", board["board_path"]], cwd=board["root"]
+        )
+        if rc != 0:
+            return {
+                "ok": False,
+                "exit_code": rc,
+                "output_tail": (gathered + err)[-TAIL:],
+            }
+        rc, out, err = await run_cmd(
+            ["claude", "-p", "--agent", "ticket-retro", "--model", "sonnet"],
+            cwd=board["root"], stdin=gathered,
+        )  # fmt: skip
+        if rc != 0 or not out.strip():
+            return {"ok": False, "exit_code": rc, "output_tail": (out + err)[-TAIL:],
+                    "reason": "ticket-retro failed" if rc else "ticket-retro printed nothing"}  # fmt: skip
+        rc, saved, err = await run_cmd(
+            [tk_sh(), "retro-save", board["board_path"]], cwd=board["root"], stdin=out
+        )
+        return {"ok": rc == 0, "exit_code": rc, "output_tail": (saved + err)[-TAIL:],
+                "data": self.retro_data(board)}  # fmt: skip
+
+    async def rpc_retro_apply(self, ws, params: dict) -> dict:
+        """tk.sh retro-apply <board> <mark> <ids...>: marks the saved proposals and
+        regenerates retro-results.md."""
+        board = self.board(params)
+        rc, out = await self.tk(board, "retro-apply", params["mark"], *params["ids"])
+        return {"ok": rc == 0, "exit_code": rc, "output_tail": out[-TAIL:],
+                "data": self.retro_data(board)}  # fmt: skip
+
+    async def rpc_sweep_board(self, ws, params: dict) -> dict:
+        """sweep.sh list, kept to the rows tied to this board's tickets (their
+        branches, their worktree paths and the workspaces on those paths), then
+        sweep.sh remove for each `removable` one. Other boards' rows are never
+        touched; the rest, and any remove sweep.sh refuses, are reported skipped."""
+        board = self.board(params)
+        root = board["root"]
+        if not (Path(board["board_path"]) / "retro-results.md").is_file():
+            raise RpcRefused("sweep needs a retro first: retro-results.md is missing")
+        tickets = [
+            t
+            for t in board.get("tickets") or []
+            if t.get("branch") and t.get("col") == "done"
+        ]
+        branches = {t["branch"] for t in tickets}
+        paths = {
+            t.get("worktree")
+            or str(Path(root).parent / f"{Path(root).name}--{t['branch']}")
+            for t in tickets
+        }
+        rc, out, err = await run_cmd([sweep_sh(), "list"], cwd=root)
+        if rc != 0:
+            return {"ok": False, "exit_code": rc, "output_tail": (out + err)[-TAIL:]}
+        removed: list[dict] = []
+        skipped: list[dict] = []
+        for line in out.splitlines():
+            cols = line.split("\t")
+            if line.startswith("#") or len(cols) < 10:
+                continue
+            kind, branch, path, state, reason, _agent, _dirty, ws_id, _board, flags = (
+                cols[:10]
+            )
+            flags = flags.split(",")
+            if kind == "worktree" and branch in branches:
+                ref, flag = path, "--worktree"
+            elif kind == "branch" and branch in branches:
+                ref, flag = branch, "--branch"
+            elif kind == "workspace" and path in paths:
+                ref, flag = ws_id, "--workspace"
+            else:
+                continue
+            if "removable" not in flags:
+                held = [f for f in flags if f in SWEEP_HOLDS]
+                why = ", ".join(held) or (
+                    f"{state} ({reason})" if reason not in ("", "-") else state
+                )
+                skipped.append({"kind": kind, "ref": ref, "reason": why})
+                continue
+            rc, out2, err2 = await run_cmd([sweep_sh(), "remove", flag, ref], cwd=root)
+            if rc == 0:
+                removed.append({"kind": kind, "ref": ref})
+            else:
+                why = (
+                    SWEEP_REFUSALS.get(rc)
+                    or (out2 + err2).strip()[-200:]
+                    or f"exit {rc}"
+                )
+                skipped.append({"kind": kind, "ref": ref, "reason": why})
+        return {"ok": True, "exit_code": 0,
+                "output_tail": f"removed {len(removed)}, skipped {len(skipped)}",
+                "data": {"removed": removed, "skipped": skipped}}  # fmt: skip
+
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")
         if not isinstance(rid, str) or not 1 <= len(rid) <= 128:
@@ -2446,6 +2950,12 @@ async def run(daemon: Daemon):
         loop.add_signal_handler(sig, stop)
     with contextlib.suppress(asyncio.CancelledError):
         await task
+    for resolver in daemon.resolvers:  # killed agents; their merges are aborted
+        resolver.cancel()
+    if daemon.resolvers:
+        await asyncio.wait(
+            set(daemon.resolvers), timeout=daemon.cfg["shutdown_grace_s"]
+        )
     if daemon.launches:  # a launch killed midway leaves a half-made worktree
         grace = daemon.cfg["shutdown_grace_s"]
         log.info("waiting up to %gs for %d launches", grace, len(daemon.launches))

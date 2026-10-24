@@ -63,6 +63,26 @@ def test_file_goes_to_the_daemon_and_a_refusal_is_a_502(client, add_token):
     assert "git diff failed" in response.text
 
 
+def test_against_head_goes_to_the_daemon_for_a_merges_diff(client, add_token):
+    token = add_token("dev-daniel")
+    with (
+        connect_daemon(client, token) as (daemon, _),
+        ThreadPoolExecutor(1) as pool,
+    ):
+        daemon.send_json(snapshot())
+
+        pending = pool.submit(client.get, diff_url("27"), params={"against": "head"})
+        rpc = daemon.receive_json()
+        assert_valid(rpc)
+        assert rpc["params"] == {"board_key": KEY, "nn": "27", "against": "head"}
+        daemon.send_json({"type": "rpc_result", "id": rpc["id"], "ok": True,
+                          "exit_code": 0, "output_tail": "", "data": DATA})  # fmt: skip
+        assert pending.result(10).status_code == 200
+        bad = client.get(diff_url("27"), params={"against": "main; rm -rf"})
+
+    assert bad.status_code == 422
+
+
 def test_unknown_ticket_is_404_and_an_offline_devbox_409(client, add_token):
     token = add_token("dev-daniel")
     with connect_daemon(client, token) as (daemon, _):

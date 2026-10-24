@@ -29,6 +29,8 @@ function stubClient(): DetailApi {
     proposeMemory: async () => true,
     ship: async () => true,
     resolveNoCode: async () => true,
+    finishConflict: async () => true,
+    abortConflict: async () => true,
     refine: async () => true,
     setTaskDone: async () => true,
   };
@@ -50,6 +52,8 @@ function setup(open: [string, string] | null = [KEY, "01"], api: Partial<DetailA
     paneTail: vi.fn().mockResolvedValue(undefined),
     ship: vi.fn().mockResolvedValue(true),
     resolveNoCode: vi.fn().mockResolvedValue(true),
+    finishConflict: vi.fn().mockResolvedValue(true),
+    abortConflict: vi.fn().mockResolvedValue(true),
     ...api,
   };
   const store = createStore();

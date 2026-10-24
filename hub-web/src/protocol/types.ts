@@ -43,6 +43,25 @@ export interface ManualTask {
   source: "synthesis" | "developer";
 }
 
+/**
+ * `$defs/merge_conflict`: a conflict on the ticket's PR, sent to ticket-merger by the
+ * daemon. review waits for the developer's Commit merge / Abort; failed means the
+ * merge was aborted (reason, output_tail).
+ */
+export interface MergeConflict {
+  state: "resolving" | "review" | "failed" | "committed" | "aborted" | "up_to_date";
+  started_at?: Timestamp | null;
+  finished_at?: Timestamp | null;
+  /** The base branch merged in. */
+  base?: string | null;
+  /** The files merge-conflict.sh start reported conflicted. */
+  files?: string[];
+  /** ticket-merger's answer: each file and how it was resolved, refusals, checks. */
+  summary?: string | null;
+  reason?: string | null;
+  output_tail?: string | null;
+}
+
 /** `$defs/ticket` (subset). */
 export interface Ticket {
   nn: string;
@@ -74,6 +93,8 @@ export interface Ticket {
   synthesis_error?: string | null;
   /** The ticket's worktree on its box; empty before launch. The Review tab needs one. */
   worktree?: string;
+  /** A merge conflict sent to ticket-merger, and where it stands. */
+  merge_conflict?: MergeConflict | null;
 }
 
 /** `$defs/policy` (subset): `tk.sh policy <board>`, resolved. */
@@ -107,6 +128,20 @@ export interface BoardBrief {
   synthesis_error?: string | null;
 }
 
+/** `rest_board_rpc` data of run_retro / retro_apply: the saved proposals and retro-results.md. */
+export interface RetroData {
+  proposals_md: string | null;
+  results_md: string | null;
+}
+
+/** `rest_board_rpc` data of sweep_board: what it removed, and what it left (with why). */
+export interface SweepData {
+  removed: { kind: string; ref: string }[];
+  skipped: { kind: string; ref: string; reason: string }[];
+}
+
+export type RetroMark = "approve" | "reject" | "defer";
+
 /** `$defs/board` (subset). `stale`/`last_seen` are added by the hub. */
 export interface Board {
   key: string;
@@ -122,6 +157,10 @@ export interface Board {
   hub_meta: { archived: boolean; board_brief?: BoardBrief | null };
   /** .scratch/<board>/board.md from the export; null when the board has none. */
   board_md?: string | null;
+  /** .scratch/<board>/retro-results.md from the export; null until a retro has marks. */
+  retro_results_md?: string | null;
+  /** .scratch/<board>/retro/proposals.md (with its marks) from the export; null before a retro. */
+  retro_proposals_md?: string | null;
   hash: string;
   exported_at: Timestamp;
   tickets: Ticket[];
