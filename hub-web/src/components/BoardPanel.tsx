@@ -3,6 +3,7 @@ import { formatSeen } from "../columns";
 import type { Board, BoardBrief } from "../protocol/types";
 import styles from "./BoardPanel.module.css";
 import { Markdown } from "./Markdown";
+import { RetroSweep, type RetroApi } from "./RetroSweep";
 import { Spinner } from "./Spinner";
 import { useView } from "./StoreContext";
 
@@ -42,13 +43,16 @@ function BriefStatus({ brief }: { brief: BoardBrief }) {
  * none) and where it stands (the agy board brief: landed / in flight / needs you / next).
  * agy never writes board.md.
  */
-export function BoardPanel({ board, api, onClose }: { board: Board; api?: Partial<BriefApi>; onClose: () => void }) {
-  const { pending } = useView();
+export function BoardPanel({ board, api, onClose }: { board: Board; api?: Partial<BriefApi & RetroApi>; onClose: () => void }) {
+  const { pending, allBoards } = useView();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+  // Judged on the unfiltered board: a stage filter may hide tickets that are not done.
+  const all = allBoards.find((b) => b.key === board.key) ?? board;
+  const allDone = all.tickets.length > 0 && all.tickets.every((t) => t.col === "done");
   const brief = board.hub_meta.board_brief ?? null;
   const hasLines = brief !== null && SECTIONS.some(([, k]) => brief[k].length > 0);
   const busy =
@@ -110,6 +114,7 @@ export function BoardPanel({ board, api, onClose }: { board: Board; api?: Partia
           ) : (
             <p className={styles.note}>No brief yet: ↻ Refresh asks agy for one.</p>
           )}
+          {api && <RetroSweep board={board} allDone={allDone} api={api} />}
         </div>
       </div>
     </div>

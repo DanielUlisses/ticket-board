@@ -18,6 +18,8 @@ it gave, "" for /dev/null). The mode comes from $FAKE_SYNTH_MODE_<BIN> (bin uppe
   linger   starts a helper (its own process group, same session) that keeps stdout
            and stderr open for 60 s, writes its pid to $FAKE_SYNTH_PIDFILE, then
            prints the good envelope and exits 0
+With `--agent` (ticket-retro) it prints $FAKE_RETRO_OUT as is and exits with
+$FAKE_RETRO_EXIT.
 The payload: $FAKE_SYNTH_PAYLOAD (JSON), else a good one naming the bin (a board
 brief's, when the prompt asks for the BOARD BRIEF)."""
 
@@ -38,6 +40,10 @@ if log := os.environ.get("FAKE_SYNTH_LOG"):
             )
             + "\n"
         )
+
+if "--agent" in sys.argv:  # ticket-retro: proposals as plain text on stdout
+    print(os.environ.get("FAKE_RETRO_OUT", "### M1 a rule\n\n### E1 an edit"))
+    sys.exit(int(os.environ.get("FAKE_RETRO_EXIT", "0")))
 
 mode = (
     os.environ.get(f"FAKE_SYNTH_MODE_{name.upper().replace('-', '_')}")

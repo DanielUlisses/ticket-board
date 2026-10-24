@@ -49,10 +49,12 @@ class Box:
         self.bin = tmp / "bin"
         self.tk_log = tmp / "tk.log"
         self.synth_log = tmp / "synth.log"
+        self.sweep_log = tmp / "sweep.log"
         self.bin.mkdir(parents=True)
         self.work.mkdir(parents=True)
         for src, name in [
             ("tk_sh.py", "tk.sh"),
+            ("sweep_sh.py", "sweep.sh"),
             ("herdr.py", "herdr"),
             ("op.py", "op"),
             ("systemd_run.py", "systemd-run"),
@@ -72,6 +74,7 @@ class Box:
             "TK_DEVBOX": "dev-test",
             "FAKE_TK_LOG": str(self.tk_log),
             "FAKE_SYNTH_LOG": str(self.synth_log),
+            "FAKE_SWEEP_LOG": str(self.sweep_log),
             "FAKE_SYSTEMD_LOG": str(tmp / "systemd.log"),
         }
         self.env.pop("TK_SCAN_GLOB", None)
@@ -107,6 +110,11 @@ class Box:
         if not self.synth_log.exists():
             return []
         return [json.loads(line) for line in self.synth_log.read_text().splitlines()]
+
+    def sweep_calls(self) -> list[dict]:
+        if not self.sweep_log.exists():
+            return []
+        return [json.loads(line) for line in self.sweep_log.read_text().splitlines()]
 
     def tk_calls(self) -> list[dict]:
         if not self.tk_log.exists():

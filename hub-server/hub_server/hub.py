@@ -16,7 +16,7 @@ from hub_server import NAME, PROTOCOL_VERSION, protocol
 from hub_server.store import Store, now
 
 # board.md, Protocol: 10 min for synthesis RPCs, 2 min for everything else.
-LONG_RPCS = {"refine_with_comment", "refresh_board_brief", "run_retro"}
+LONG_RPCS = {"refine_with_comment", "refresh_board_brief", "run_retro", "sweep_board"}
 LONG_TIMEOUT = 600.0
 TIMEOUT = 120.0
 UI_SEND_TIMEOUT = 5.0

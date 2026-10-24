@@ -19,9 +19,12 @@ import type {
   BoardsResponse,
   HubSettings,
   PolicyEdit,
+  RetroData,
+  RetroMark,
   ReportResponse,
   SchedulerEntry,
   SentRpc,
+  SweepData,
   TicketType,
   UiEvent,
 } from "../protocol/types";
@@ -121,6 +124,22 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
       // not JSON
     }
     return `HTTP ${res.status}`;
+  }
+
+  /** POST (JSON body optional) to a route that answers `{data}`: the data, else a toast `<what> failed: <why>` and null. */
+  async function postData<T>(url: string, body: unknown, what: string): Promise<T | null> {
+    try {
+      const res = await doFetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (res.ok) return ((await res.json()) as { data: T }).data;
+      store.toast({ kind: "error", text: `${what} failed: ${await errorText(res)}` });
+    } catch (err) {
+      store.toast({ kind: "error", text: `${what} failed: ${(err as Error).message}` });
+    }
+    return null;
   }
 
   /** POST a JSON body; true on 2xx, else a toast `<what> failed: <why>` and false. */
@@ -241,6 +260,18 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     /** 📄 Board's ↻ Refresh: a board-brief synthesis run now; true when the hub took it. The brief itself arrives with the board's next snapshot. */
     async refreshBrief(boardKey: string): Promise<boolean> {
       return (await action("Board brief", boardUrl(boardKey, "brief"))) !== null;
+    },
+    /** Retro: ticket-retro's proposals for the board (a long wait); null, with a toast, when refused or failed. */
+    async runRetro(boardKey: string): Promise<RetroData | null> {
+      return postData<RetroData>(boardUrl(boardKey, "retro"), undefined, "Retro");
+    },
+    /** Marks proposals (tk.sh retro-apply); the proposals with their marks and the regenerated results come back. */
+    async applyRetro(boardKey: string, mark: RetroMark, ids: string[]): Promise<RetroData | null> {
+      return postData<RetroData>(boardUrl(boardKey, "retro/apply"), { mark, ids }, "Retro mark");
+    },
+    /** Sweep: removes this board's removable leftovers; what it removed and skipped come back. */
+    async sweepBoard(boardKey: string): Promise<SweepData | null> {
+      return postData<SweepData>(boardUrl(boardKey, "sweep"), undefined, "Sweep");
     },
     /** Loads the boards, then opens the socket (also when the load failed). */
     async start() {

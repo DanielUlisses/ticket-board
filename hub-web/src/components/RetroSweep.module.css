@@ -1,0 +1,70 @@
+.wrap {
+  border-top: 1px solid var(--border);
+  margin-top: 14px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.title {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-right: auto;
+}
+.btn,
+.small {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.btn:disabled,
+.small:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.proposal {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+.mark {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.memory {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 8px 0;
+}
+.memory textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 12.5px;
+}
+.sub {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.note {
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}

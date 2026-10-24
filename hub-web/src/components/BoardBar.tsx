@@ -7,6 +7,7 @@ import { Spinner } from "./Spinner";
 import { useView } from "./StoreContext";
 import { SyncBox, type OnSync } from "./SyncBox";
 import { BoardPanel, type BriefApi } from "./BoardPanel";
+import type { RetroApi } from "./RetroSweep";
 import { PolicyPopover, type PolicyApi } from "./PolicyPopover";
 
 /** Starts a board's ▶ Frontier; the button is busy until the returned promise settles. */
@@ -48,7 +49,7 @@ function FrontierButton({ boardKey, onFrontier }: { boardKey: string; onFrontier
 export function BoardBar({ board, box, api, onFrontier, onSync }: {
   board: Board;
   box: Devbox | undefined;
-  api?: PolicyApi & Partial<BriefApi>;
+  api?: PolicyApi & Partial<BriefApi & RetroApi>;
   onFrontier?: OnFrontier;
   onSync?: OnSync;
 }) {

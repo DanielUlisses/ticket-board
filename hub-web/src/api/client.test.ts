@@ -329,6 +329,31 @@ describe("ticket actions", () => {
     expect(store.view().pending).toHaveLength(1);
   });
 
+  it("runRetro, applyRetro and sweepBoard post to the board and return the daemon's data", async () => {
+    const { fetch, client } = setup();
+    const url = (leaf: string) => `https://tk-hub.example.ts.net/api/boards/${KEY}/${leaf}`;
+    const data = { proposals_md: "### M1 x", results_md: null };
+    fetch.mockImplementationOnce(() => json({ board_key: KEY, output_tail: "", data }));
+    expect(await client.runRetro(KEY)).toEqual(data);
+    fetch.mockImplementationOnce(() => json({ board_key: KEY, output_tail: "", data }));
+    expect(await client.applyRetro(KEY, "approve", ["M1"])).toEqual(data);
+    fetch.mockImplementationOnce(() => json({ board_key: KEY, output_tail: "", data: { removed: [], skipped: [] } }));
+    expect(await client.sweepBoard(KEY)).toEqual({ removed: [], skipped: [] });
+    expect(fetch.mock.calls.map((c) => [c[0], c[1]?.method])).toEqual([
+      [url("retro"), "POST"],
+      [url("retro/apply"), "POST"],
+      [url("sweep"), "POST"],
+    ]);
+    expect(JSON.parse(String(fetch.mock.calls[1][1]?.body))).toEqual({ mark: "approve", ids: ["M1"] });
+  });
+
+  it("a failed retro toasts the hub's reason and returns null", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ detail: "retro needs every ticket done: 02 not done" }, 409));
+    expect(await client.runRetro(KEY)).toBeNull();
+    expect(store.view().toasts.at(-1)).toMatchObject({ kind: "error", text: expect.stringContaining("not done") });
+  });
+
   it("a refused brief refresh toasts and returns false", async () => {
     const { store, fetch, client } = setup();
     fetch.mockImplementationOnce(() => json({ detail: "devbox dev-daniel is offline" }, 409));

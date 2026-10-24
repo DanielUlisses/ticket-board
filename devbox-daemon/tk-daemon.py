@@ -150,11 +150,15 @@ POLICY_WRITABLE = {
     "auto_merge": lambda v: isinstance(v, bool),
     "night_shift": lambda v: isinstance(v, bool),
 }
-SYNTHESIS_RPCS = frozenset({"refine_with_comment", "refresh_board_brief", "run_retro"})
+SYNTHESIS_RPCS = frozenset(
+    {"refine_with_comment", "refresh_board_brief", "run_retro", "sweep_board"}
+)  # sweep_board: not synthesis, but as long, and cancelling it would kill a remove
 SYNTHESIS_COLUMNS = frozenset({"needs", "human", "pr"})  # a move into one synthesizes
 SHOW_LINES = "180"  # tk.sh show <board> <NN> 180, part of the synthesis context
 FAILED = re.compile(r"^tk-export: failed (\S+)(?: (/.*))?$", re.MULTILINE)
 RESUME = re.compile(r"^tk-export: resume ([0-9]+)$", re.MULTILINE)
+SWEEP_HOLDS = ("dirty", "dirty-unknown", "agent-busy", "self")  # why a row is kept
+SWEEP_REFUSALS = {2: "dirty", 3: "agent-busy", 4: "unmerged"}  # sweep.sh remove exits
 TAIL = 4000  # characters of output_tail
 PANE = 200_000  # characters of a pane_tail's data.pane
 # RPCs that change nothing: no re-export after them (pane_tail is polled).
@@ -202,6 +206,15 @@ def tk_sh() -> str:
     if shutil.which("tk.sh"):
         return "tk.sh"
     return str(Path.home() / ".claude/skills/implement-tickets/scripts/tk.sh")
+
+
+def sweep_sh() -> str:
+    """sweep.sh as tk_sh() finds tk.sh: $SWEEP_SH, sweep.sh on PATH, the installed skill's."""
+    if os.environ.get("SWEEP_SH"):
+        return os.environ["SWEEP_SH"]
+    if shutil.which("sweep.sh"):
+        return "sweep.sh"
+    return str(Path.home() / ".claude/skills/sweep-tickets/scripts/sweep.sh")
 
 
 class Schema:
@@ -607,21 +620,21 @@ async def last_sync(starting: set[str] = frozenset()) -> dict | None:
 
 async def run_cmd(
     argv: list[str], env: dict | None = None, cwd: str | None = None,
-    errors: str = "replace",
+    errors: str = "replace", stdin: str | None = None,
 ) -> tuple[int, str, str]:  # fmt: skip
-    """Run a command in its own session; cancelling (a timeout, SIGTERM) kills
-    everything in that session."""
+    """Run a command in its own session (stdin: /dev/null, or the text given);
+    cancelling (a timeout, SIGTERM) kills everything in that session."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
         env=env,
         cwd=cwd,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     try:
-        out, err = await proc.communicate()
+        out, err = await proc.communicate(None if stdin is None else stdin.encode())
     except asyncio.CancelledError:
         agy_runner.kill_session(proc.pid)
         await proc.wait()
@@ -757,6 +770,9 @@ class Daemon:
             "refresh_board_brief": self.rpc_refresh_board_brief,
             "set_task_done": self.rpc_set_task_done,
             "propose_memory": self.rpc_propose_memory,
+            "run_retro": self.rpc_run_retro,
+            "retro_apply": self.rpc_retro_apply,
+            "sweep_board": self.rpc_sweep_board,
             "open_pr": functools.partial(self.rpc_ship, "open_pr"),
             "ssh_push": functools.partial(self.rpc_ship, "ssh_push"),
             "merge_pr": functools.partial(self.rpc_ship, "merge_pr"),
@@ -2150,6 +2166,115 @@ class Daemon:
                 "- [ ] stale or duplicate lines are pruned\n"
             )
         return {"ok": True, "exit_code": 0, "output_tail": f"wrote {path}"}
+
+    def retro_data(self, board: dict) -> dict:
+        """The saved proposals and the regenerated results, as files on the box."""
+        path = Path(board["board_path"])
+        return {
+            "proposals_md": read_file(path / "retro" / "proposals.md"),
+            "results_md": read_file(path / "retro-results.md"),
+        }
+
+    async def rpc_run_retro(self, ws, params: dict) -> dict:
+        """The retro skill's own pipeline: tk.sh retro | claude -p --agent
+        ticket-retro | tk.sh retro-save. Only once every ticket is done."""
+        board = self.board(params)
+        open_ = [t["nn"] for t in board.get("tickets") or [] if t.get("col") != "done"]
+        if open_:
+            raise RpcRefused(
+                f"retro needs every ticket done: {' '.join(open_)} not done"
+            )
+        rc, gathered, err = await run_cmd(
+            [tk_sh(), "retro", board["board_path"]], cwd=board["root"]
+        )
+        if rc != 0:
+            return {
+                "ok": False,
+                "exit_code": rc,
+                "output_tail": (gathered + err)[-TAIL:],
+            }
+        rc, out, err = await run_cmd(
+            ["claude", "-p", "--agent", "ticket-retro", "--model", "sonnet"],
+            cwd=board["root"], stdin=gathered,
+        )  # fmt: skip
+        if rc != 0 or not out.strip():
+            return {"ok": False, "exit_code": rc, "output_tail": (out + err)[-TAIL:],
+                    "reason": "ticket-retro failed" if rc else "ticket-retro printed nothing"}  # fmt: skip
+        rc, saved, err = await run_cmd(
+            [tk_sh(), "retro-save", board["board_path"]], cwd=board["root"], stdin=out
+        )
+        return {"ok": rc == 0, "exit_code": rc, "output_tail": (saved + err)[-TAIL:],
+                "data": self.retro_data(board)}  # fmt: skip
+
+    async def rpc_retro_apply(self, ws, params: dict) -> dict:
+        """tk.sh retro-apply <board> <mark> <ids...>: marks the saved proposals and
+        regenerates retro-results.md."""
+        board = self.board(params)
+        rc, out = await self.tk(board, "retro-apply", params["mark"], *params["ids"])
+        return {"ok": rc == 0, "exit_code": rc, "output_tail": out[-TAIL:],
+                "data": self.retro_data(board)}  # fmt: skip
+
+    async def rpc_sweep_board(self, ws, params: dict) -> dict:
+        """sweep.sh list, kept to the rows tied to this board's tickets (their
+        branches, their worktree paths and the workspaces on those paths), then
+        sweep.sh remove for each `removable` one. Other boards' rows are never
+        touched; the rest, and any remove sweep.sh refuses, are reported skipped."""
+        board = self.board(params)
+        root = board["root"]
+        if not (Path(board["board_path"]) / "retro-results.md").is_file():
+            raise RpcRefused("sweep needs a retro first: retro-results.md is missing")
+        tickets = [
+            t
+            for t in board.get("tickets") or []
+            if t.get("branch") and t.get("col") == "done"
+        ]
+        branches = {t["branch"] for t in tickets}
+        paths = {
+            t.get("worktree")
+            or str(Path(root).parent / f"{Path(root).name}--{t['branch']}")
+            for t in tickets
+        }
+        rc, out, err = await run_cmd([sweep_sh(), "list"], cwd=root)
+        if rc != 0:
+            return {"ok": False, "exit_code": rc, "output_tail": (out + err)[-TAIL:]}
+        removed: list[dict] = []
+        skipped: list[dict] = []
+        for line in out.splitlines():
+            cols = line.split("\t")
+            if line.startswith("#") or len(cols) < 10:
+                continue
+            kind, branch, path, state, reason, _agent, _dirty, ws_id, _board, flags = (
+                cols[:10]
+            )
+            flags = flags.split(",")
+            if kind == "worktree" and branch in branches:
+                ref, flag = path, "--worktree"
+            elif kind == "branch" and branch in branches:
+                ref, flag = branch, "--branch"
+            elif kind == "workspace" and path in paths:
+                ref, flag = ws_id, "--workspace"
+            else:
+                continue
+            if "removable" not in flags:
+                held = [f for f in flags if f in SWEEP_HOLDS]
+                why = ", ".join(held) or (
+                    f"{state} ({reason})" if reason not in ("", "-") else state
+                )
+                skipped.append({"kind": kind, "ref": ref, "reason": why})
+                continue
+            rc, out2, err2 = await run_cmd([sweep_sh(), "remove", flag, ref], cwd=root)
+            if rc == 0:
+                removed.append({"kind": kind, "ref": ref})
+            else:
+                why = (
+                    SWEEP_REFUSALS.get(rc)
+                    or (out2 + err2).strip()[-200:]
+                    or f"exit {rc}"
+                )
+                skipped.append({"kind": kind, "ref": ref, "reason": why})
+        return {"ok": True, "exit_code": 0,
+                "output_tail": f"removed {len(removed)}, skipped {len(skipped)}",
+                "data": {"removed": removed, "skipped": skipped}}  # fmt: skip
 
     async def handle_rpc(self, ws, msg: dict):
         rid, method = msg.get("id"), msg.get("method")
