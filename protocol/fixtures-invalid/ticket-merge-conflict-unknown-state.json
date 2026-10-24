@@ -1,0 +1,129 @@
+{
+  "type": "snapshot",
+  "protocol_version": "1.0",
+  "devbox": "dev-daniel",
+  "full": false,
+  "health": {
+    "daemon_version": "0.1.0",
+    "herdr": {
+      "ok": true,
+      "status": "herdr server running (pid 1843, 6 agents)"
+    },
+    "usage": {
+      "state": "ok",
+      "five_hour": {
+        "used_percentage": 42,
+        "resets_at": "2026-10-23T17:00:00Z"
+      },
+      "seven_day": {
+        "used_percentage": 71.5,
+        "resets_at": "2026-10-27T09:00:00Z"
+      },
+      "updated_at": "2026-10-23T14:01:40Z"
+    },
+    "running": 5,
+    "last_sync": null
+  },
+  "boards": [
+    {
+      "key": "dev-daniel/devboxes/tk-hub",
+      "devbox": "dev-daniel",
+      "board_id": "tk-hub",
+      "slug": "tk-hub",
+      "repo": "devboxes",
+      "root": "/home/daniel/work/devboxes",
+      "base": "main",
+      "has_remote": false,
+      "forge": "none",
+      "board_path": "/home/daniel/work/devboxes/.scratch/tk-hub",
+      "board_md": null,
+      "retro_results_md": null,
+      "project_memory": null,
+      "hub_meta": {
+        "archived": false,
+        "board_brief": null
+      },
+      "policy": {
+        "forge": "none",
+        "require_human_before_pr": true,
+        "auto_merge": false,
+        "night_shift": false,
+        "autonomy": "assist",
+        "max_parallel": 5,
+        "usage_gate_pct": 90,
+        "synthesis": {
+          "backends": [
+            "agy"
+          ],
+          "timeout": 300
+        }
+      },
+      "policy_sources": {
+        "forge": "detected",
+        "autonomy": "default",
+        "max_parallel": "box",
+        "usage_gate_pct": "box"
+      },
+      "hash": "sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d",
+      "exported_at": "2026-10-23T14:02:11Z",
+      "tickets": [
+        {
+          "nn": "05",
+          "title": "Install agy and cursor-agent on every box",
+          "ref": "05-install-agy-and-cursor-a.md",
+          "file": "/home/daniel/work/devboxes/.scratch/tk-hub/issues/05-install-agy-and-cursor-a.md",
+          "status": "in-progress",
+          "branch": "feat-05-install-agy-and-cursor-a",
+          "base": "359532c553e85828153dc96f3cc69876c608aa25",
+          "model": "sonnet",
+          "effort": "low",
+          "account": "unknown",
+          "agent": "tk-feat-05-install-agy-and-cursor-a",
+          "blocked_raw": "None (can start immediately)",
+          "blockers": [],
+          "smodel": "sonnet",
+          "seffort": "low",
+          "parent": "",
+          "worktree": "/home/daniel/work/devboxes--feat-05-install-agy-and-cursor-a",
+          "repo": "devboxes",
+          "repo_path": "/home/daniel/work/devboxes",
+          "xrefs": [],
+          "unknown_refs": [],
+          "foreign": "",
+          "xblockers_open": [],
+          "state": "blocked",
+          "landed": "no",
+          "phase": "implementing",
+          "round": "",
+          "tab": "w1:t3",
+          "pr": null,
+          "checks": {},
+          "open_blockers": [],
+          "col": "pr",
+          "note": "agent at a dialog",
+          "hint": "answer it in tab w1:t3",
+          "summary": "Installs agy and cursor-agent from the mise registry.\nWaiting on a permission dialog.",
+          "reviewer_notes": null,
+          "full_report_md": null,
+          "manual_tasks": [],
+          "synthesis_backend": "agy",
+          "synthesis_status": "failed",
+          "merge_conflict": {
+            "state": "half-merged",
+            "started_at": "2026-10-23T14:02:10Z",
+            "finished_at": "2026-10-23T14:09:45Z",
+            "base": "main",
+            "files": [
+              "roles/hub/tasks/main.yml",
+              "README.md"
+            ],
+            "summary": "roles/hub/tasks/main.yml: kept both tasks (main added the tailscale serve step, the ticket the systemd unit)\nREADME.md: took main's table and re-added the hub row\nRefused: none\nChecks: `make lint` passed",
+            "reason": null,
+            "output_tail": "UNMERGED none\nMARKERS none\nDIFF vs feat-05-x before the merge:\n README.md                | 4 ++--\n roles/hub/tasks/main.yml | 9 +++++++++\n"
+          }
+        }
+      ]
+    }
+  ],
+  "removed": []
+}

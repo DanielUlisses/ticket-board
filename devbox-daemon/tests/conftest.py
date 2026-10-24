@@ -1,6 +1,6 @@
 """Shared test scaffolding: a fake box (HOME, ~/work repos with boards) and fake
-`tk.sh`, `herdr`, `op` and the synthesis CLIs `agy`, `cursor-agent`, `claude` on
-PATH (tests/fakes), and the fake hub's TLS certificate."""
+`tk.sh`, `merge-conflict.sh` (beside it), `herdr`, `op` and the synthesis CLIs `agy`,
+`cursor-agent`, `claude` on PATH (tests/fakes), and the fake hub's TLS certificate."""
 
 import json
 import os
@@ -50,6 +50,7 @@ class Box:
         self.tk_log = tmp / "tk.log"
         self.synth_log = tmp / "synth.log"
         self.sweep_log = tmp / "sweep.log"
+        self.mc_log = tmp / "mc.log"
         self.bin.mkdir(parents=True)
         self.work.mkdir(parents=True)
         for src, name in [
@@ -63,6 +64,7 @@ class Box:
             ("synth_cli.py", "agy"),
             ("synth_cli.py", "cursor-agent"),
             ("synth_cli.py", "claude"),
+            ("merge_conflict.py", "merge-conflict.sh"),
         ]:
             dst = self.bin / name
             shutil.copy(FAKES / src, dst)
@@ -75,6 +77,7 @@ class Box:
             "FAKE_TK_LOG": str(self.tk_log),
             "FAKE_SYNTH_LOG": str(self.synth_log),
             "FAKE_SWEEP_LOG": str(self.sweep_log),
+            "FAKE_MC_LOG": str(self.mc_log),
             "FAKE_SYSTEMD_LOG": str(tmp / "systemd.log"),
         }
         self.env.pop("TK_SCAN_GLOB", None)
@@ -115,6 +118,11 @@ class Box:
         if not self.sweep_log.exists():
             return []
         return [json.loads(line) for line in self.sweep_log.read_text().splitlines()]
+
+    def mc_calls(self) -> list[dict]:
+        if not self.mc_log.exists():
+            return []
+        return [json.loads(line) for line in self.mc_log.read_text().splitlines()]
 
     def tk_calls(self) -> list[dict]:
         if not self.tk_log.exists():

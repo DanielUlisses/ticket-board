@@ -47,6 +47,9 @@ export interface HubClientDeps {
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
 
+/** What a diff is taken against: the ticket's base sha (default) or its worktree's HEAD. */
+export type DiffAgainst = "base" | "head";
+
 /** The ticket RPCs with no params besides the ticket. */
 export type ShipMethod = "open_pr" | "ssh_push" | "merge_pr" | "verify_landed" | "resolve_ticket";
 
@@ -195,11 +198,18 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     return (await res.json()) as T;
   }
 
-  /** The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff. */
-  function diff(boardKey: string, nn: string): Promise<DiffListResponse>;
-  function diff(boardKey: string, nn: string, file: string): Promise<DiffFileResponse>;
-  function diff(boardKey: string, nn: string, file?: string) {
-    return getJson(ticketUrl(boardKey, nn, "diff") + (file === undefined ? "" : `?file=${encodeURIComponent(file)}`));
+  /**
+   * The ticket's uncommitted diff against its base: the file list, or with `file` that file's diff.
+   * `against: "head"` diffs against the worktree's HEAD instead (a resolved merge, against the branch's previous head).
+   */
+  function diff(boardKey: string, nn: string, file?: undefined, against?: DiffAgainst): Promise<DiffListResponse>;
+  function diff(boardKey: string, nn: string, file: string, against?: DiffAgainst): Promise<DiffFileResponse>;
+  function diff(boardKey: string, nn: string, file?: string, against?: DiffAgainst) {
+    const query = [
+      ...(file === undefined ? [] : [`file=${encodeURIComponent(file)}`]),
+      ...(against === "head" ? ["against=head"] : []),
+    ];
+    return getJson(ticketUrl(boardKey, nn, "diff") + (query.length ? `?${query.join("&")}` : ""));
   }
 
   return {
@@ -237,6 +247,14 @@ export function createHubClient(store: Store, deps: HubClientDeps = {}) {
     async resolveNoCode(boardKey: string, nn: string, reason: string): Promise<boolean> {
       if (!reason.trim()) return false;
       return (await ticketAction("Resolve", boardKey, nn, "resolve_nocode", { reason: reason.trim() })) !== null;
+    },
+    /** Commit merge: merge-conflict.sh finish commits the resolved merge and pushes it; only after the sheet's confirm. */
+    async finishConflict(boardKey: string, nn: string): Promise<boolean> {
+      return (await ticketAction("Commit merge", boardKey, nn, "finish_conflict", { confirm: true })) !== null;
+    },
+    /** Abort merge: merge-conflict.sh abort puts the worktree back; the PR still conflicts. */
+    async abortConflict(boardKey: string, nn: string): Promise<boolean> {
+      return (await ticketAction("Abort merge", boardKey, nn, "abort_conflict", {})) !== null;
     },
     /** One poll of the agent's pane; its lines arrive as a pane_tail rpc_result. Rejects when not sent. */
     async paneTail(boardKey: string, nn: string, lines: number): Promise<void> {

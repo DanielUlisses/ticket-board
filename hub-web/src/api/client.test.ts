@@ -299,6 +299,21 @@ describe("ticket actions", () => {
     expect(store.view().pending).toEqual([]);
   });
 
+  it("finishConflict posts finish_conflict with confirm, abortConflict abort_conflict", async () => {
+    const { store, fetch, client } = setup();
+    fetch.mockImplementationOnce(() => json({ rpcs: [sent("27", "finish_conflict")] }, 202));
+    fetch.mockImplementationOnce(() => json({ rpcs: [sent("28", "abort_conflict")] }, 202));
+    expect(await client.finishConflict(KEY, "27")).toBe(true);
+    expect(await client.abortConflict(KEY, "28")).toBe(true);
+    expect(fetch.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))])).toEqual([
+      [`https://tk-hub.example.ts.net/api/boards/${KEY}/tickets/27/action`,
+        { method: "finish_conflict", params: { confirm: true } }],
+      [`https://tk-hub.example.ts.net/api/boards/${KEY}/tickets/28/action`,
+        { method: "abort_conflict", params: {} }],
+    ]);
+    expect(store.view().pending).toEqual([sent("27", "finish_conflict"), sent("28", "abort_conflict")]);
+  });
+
   it("a refused action toasts the hub's reason and tracks nothing", async () => {
     const { store, fetch, client } = setup();
     fetch.mockImplementationOnce(() => json({ detail: "devbox dev-daniel is not connected" }, 409));
@@ -403,6 +418,17 @@ describe("ticket actions", () => {
       const one = { ...list, ...list.files[0], files: undefined, diff: "@@ -1 +1 @@\n+x\n", stub: null };
       const single = answering("rest_diff", JSON.parse(JSON.stringify(one)));
       await single.diff(KEY, "25", "a b.ts");
+    });
+
+    it("diff against head asks for ?against=head, with or without a file", async () => {
+      const fetch = vi.fn(async () => new Response(JSON.stringify({ files: [] }), { status: 200 }));
+      const client = createHubClient(createStore(), { origin: "https://hub", fetch: fetch as unknown as typeof globalThis.fetch });
+      await client.diff("d/r/b", "25", undefined, "head");
+      await client.diff("d/r/b", "25", "a b.ts", "head");
+      expect(fetch.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual([
+        "https://hub/api/boards/d/r/b/tickets/25/diff?against=head",
+        "https://hub/api/boards/d/r/b/tickets/25/diff?file=a%20b.ts&against=head",
+      ]);
     });
 
     it("report gives rest_report as is, a missing body as null", async () => {

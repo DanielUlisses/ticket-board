@@ -18,10 +18,13 @@ it gave, "" for /dev/null). The mode comes from $FAKE_SYNTH_MODE_<BIN> (bin uppe
   linger   starts a helper (its own process group, same session) that keeps stdout
            and stderr open for 60 s, writes its pid to $FAKE_SYNTH_PIDFILE, then
            prints the good envelope and exits 0
-With `--agent` (ticket-retro) it prints $FAKE_RETRO_OUT as is and exits with
+With `--agent ticket-retro` it prints $FAKE_RETRO_OUT as is and exits with
 $FAKE_RETRO_EXIT.
 The payload: $FAKE_SYNTH_PAYLOAD (JSON), else a good one naming the bin (a board
-brief's, when the prompt asks for the BOARD BRIEF)."""
+brief's, when the prompt asks for the BOARD BRIEF).
+An agent run (`claude -p --agent <name> ...`, the ticket-merger) in mode good prints
+$FAKE_MERGER_OUT (else a canned resolution summary) as plain text and exits with
+$FAKE_MERGER_EXIT (0)."""
 
 import json
 import os
@@ -41,7 +44,7 @@ if log := os.environ.get("FAKE_SYNTH_LOG"):
             + "\n"
         )
 
-if "--agent" in sys.argv:  # ticket-retro: proposals as plain text on stdout
+if "ticket-retro" in sys.argv:  # ticket-retro: proposals as plain text on stdout
     print(os.environ.get("FAKE_RETRO_OUT", "### M1 a rule\n\n### E1 an edit"))
     sys.exit(int(os.environ.get("FAKE_RETRO_EXIT", "0")))
 
@@ -82,7 +85,14 @@ def envelope(text: str, is_error: bool = False, status: str = "SUCCESS") -> str:
     )  # fmt: skip
 
 
-if mode == "good":
+if mode == "good" and "--agent" in sys.argv[1:]:
+    print(
+        os.environ.get(
+            "FAKE_MERGER_OUT", "src/a.py: kept both sides\nchecks: pytest passed"
+        )
+    )
+    sys.exit(int(os.environ.get("FAKE_MERGER_EXIT", "0")))
+elif mode == "good":
     print(envelope(json.dumps(payload)))
 elif mode == "text":
     print(

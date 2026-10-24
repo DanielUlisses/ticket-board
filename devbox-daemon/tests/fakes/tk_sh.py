@@ -20,7 +20,8 @@ agent) or 0. `show <board> <NN> <lines>` prints the last <lines> lines of
 `<board>/pane.txt`, or exits 21 when `<board>/agent-gone` exists; it writes
 `<board>/show-stderr` to stderr, if there. The ship verbs `pr`, `push`, `merge`,
 `resolve` and `why` (`<verb> <board> <NN> [...]`) print `<board>/<verb>-out` and
-exit with `<board>/<verb>-exit` (0 when absent). `retro <board>` prints
+exit with `<board>/<verb>-exit` (0 when absent), after `<board>/<verb>-slow` seconds.
+`retro <board>` prints
 `<board>/retro-out` (a canned line); `retro-save <board>` stores its stdin in
 `<board>/retro/proposals.md` and logs it as "stdin"; `retro-apply <board> <mark>
 <ids>...` appends `<mark> <id>` lines to `<board>/marks.txt` and writes a
@@ -145,6 +146,8 @@ elif verb in ("pr", "push", "merge", "resolve", "why"):
             file=sys.stderr,
         )
         sys.exit(1)
+    if (board / f"{verb}-slow").exists():
+        time.sleep(float((board / f"{verb}-slow").read_text()))
     out = board / f"{verb}-out"
     print(out.read_text() if out.exists() else f"{verb.upper()} ok")
     code = board / f"{verb}-exit"

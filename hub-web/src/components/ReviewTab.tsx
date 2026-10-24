@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useId, useState } from "react";
-import type { HubClient } from "../api/client";
+import type { DiffAgainst, HubClient } from "../api/client";
 import type { DiffFile, DiffFileResponse } from "../protocol/types";
 import styles from "./ReviewTab.module.css";
 
@@ -27,8 +27,14 @@ function FileDiff({ file, state }: { file: DiffFile; state: FileState | undefine
 /**
  * The ticket's uncommitted diff against its base, read-only: the file list with
  * status and stats, each file's unified diff loaded on its first expand (and kept).
+ * `against="head"`: against the worktree's HEAD instead (a resolved merge's diff).
  */
-export function ReviewTab({ boardKey, nn, load }: { boardKey: string; nn: string; load: HubClient["diff"] }) {
+export function ReviewTab({ boardKey, nn, load, against }: {
+  boardKey: string;
+  nn: string;
+  load: HubClient["diff"];
+  against?: DiffAgainst;
+}) {
   const uid = useId();
   const [files, setFiles] = useState<DiffFile[] | null>(null);
   const [truncated, setTruncated] = useState(false); // the daemon cut the list short
@@ -43,7 +49,7 @@ export function ReviewTab({ boardKey, nn, load }: { boardKey: string; nn: string
     setTotal(null);
     setTruncated(false);
     setError(null);
-    load(boardKey, nn).then(
+    (against ? load(boardKey, nn, undefined, against) : load(boardKey, nn)).then(
       (r) => {
         if (!live) return;
         setFiles(r.files);
@@ -55,7 +61,7 @@ export function ReviewTab({ boardKey, nn, load }: { boardKey: string; nn: string
     return () => {
       live = false;
     };
-  }, [load, boardKey, nn]);
+  }, [load, boardKey, nn, against]);
 
   function toggle(path: string) {
     const next = new Set(open);
@@ -64,7 +70,7 @@ export function ReviewTab({ boardKey, nn, load }: { boardKey: string; nn: string
       next.add(path);
       if (loaded[path]?.state !== "done" && loaded[path]?.state !== "loading") {
         setLoaded((m) => ({ ...m, [path]: { state: "loading" } }));
-        load(boardKey, nn, path).then(
+        (against ? load(boardKey, nn, path, against) : load(boardKey, nn, path)).then(
           (data) => setLoaded((m) => ({ ...m, [path]: { state: "done", data } })),
           (e: Error) => setLoaded((m) => ({ ...m, [path]: { state: "error", message: e.message } })),
         );
@@ -75,7 +81,12 @@ export function ReviewTab({ boardKey, nn, load }: { boardKey: string; nn: string
 
   if (error) return <p className={styles.note}>Diff unavailable: {error}</p>;
   if (!files) return <p className={styles.note}>Loading the diff...</p>;
-  if (files.length === 0) return <p className={styles.note}>No uncommitted changes against the base.</p>;
+  if (files.length === 0)
+    return (
+      <p className={styles.note}>
+        No uncommitted changes against {against === "head" ? "the branch's head" : "the base"}.
+      </p>
+    );
   return (
     <>
       {truncated && (

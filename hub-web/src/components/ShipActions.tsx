@@ -4,9 +4,10 @@ import type { Board, Pr, RpcResult, Ticket } from "../protocol/types";
 import styles from "./Actions.module.css";
 import { Spinner } from "./Spinner";
 import { ticketId } from "../store/store";
+import { ConflictDecision } from "./MergeConflict";
 import { useView } from "./StoreContext";
 
-export type ShipApi = Pick<HubClient, "ship" | "resolveNoCode">;
+export type ShipApi = Pick<HubClient, "ship" | "resolveNoCode" | "finishConflict" | "abortConflict">;
 
 /** One merge gate (tk.sh run_gates): its name, pass/fail and what tk.sh said. */
 export interface Gate {
@@ -127,7 +128,8 @@ function Resolve({ label, pending, onResolve }: {
 
 /**
  * The ship footer: human → ⇡ Open PR (forge github|azure) or ⇡ Push via SSH (forge
- * none: never a PR); pr → ✓ Merge with its gates, Verify; done and landed → Resolve (plain);
+ * none: never a PR); pr → ✓ Merge with its gates, Verify (a resolved merge conflict: Abort merge /
+ * Commit merge instead of ✓ Merge, none while ticket-merger runs); done and landed → Resolve (plain);
  * needs, review, human, pr → Resolve without code. Null where it has nothing.
  */
 export function ShipActions({ board, ticket, api }: { board: Board; ticket: Ticket; api: ShipApi }) {
@@ -190,6 +192,8 @@ export function ShipActions({ board, ticket, api }: { board: Board; ticket: Tick
         )
       );
     const gates = gatesFromResult(last?.method === "merge_pr" ? last : undefined) ?? gatesFromPr(ticket.pr);
+    // A conflict sent to ticket-merger: no second merge while it runs; resolved, the decision replaces ✓ Merge.
+    const conflict = ticket.merge_conflict?.state;
     return (
       <div className={styles.relay}>
         <GateList gates={gates} />
@@ -210,16 +214,33 @@ export function ShipActions({ board, ticket, api }: { board: Board; ticket: Tick
           >
             {waiting("verify_landed") && <Spinner />}Verify
           </button>
-          <button
-            type="button"
-            className={styles.primary}
-            data-primary="true"
-            disabled={waiting("merge_pr")}
-            aria-busy={waiting("merge_pr")}
-            onClick={send("✓ Merge", "merge_pr")}
-          >
-            {waiting("merge_pr") && <Spinner />}✓ Merge
-          </button>
+          {conflict === "failed" && (
+            // its own abort may have failed: abort again (a no-op with no merge in progress)
+            <button
+              type="button"
+              className={styles.secondary}
+              disabled={waiting("abort_conflict")}
+              aria-busy={waiting("abort_conflict")}
+              onClick={() => void api.abortConflict(board.key, ticket.nn)}
+            >
+              {waiting("abort_conflict") && <Spinner />}Abort merge
+            </button>
+          )}
+          {conflict === "review" ? (
+            <ConflictDecision board={board} ticket={ticket} api={api} waiting={waiting} />
+          ) : (
+            <button
+              type="button"
+              className={styles.primary}
+              data-primary="true"
+              disabled={waiting("merge_pr") || conflict === "resolving"}
+              aria-busy={waiting("merge_pr") || conflict === "resolving"}
+              title={conflict === "resolving" ? "ticket-merger is resolving the conflict" : undefined}
+              onClick={send("✓ Merge", "merge_pr")}
+            >
+              {(waiting("merge_pr") || conflict === "resolving") && <Spinner />}✓ Merge
+            </button>
+          )}
         </div>
       </div>
     );

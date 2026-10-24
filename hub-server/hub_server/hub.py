@@ -28,7 +28,7 @@ SYNTHESIS_FIELDS = ("type", "board_key", "nn", "backend", "at", "error")
 TICKET_ACTIONS = (
     "launch_ticket", "say_agent", "pane_tail",
     "open_pr", "ssh_push", "merge_pr", "verify_landed", "resolve_nocode",
-    "resolve_ticket",
+    "resolve_ticket", "resolve_conflict", "finish_conflict", "abort_conflict",
 )  # fmt: skip
 # tk.sh launch --type values (ticket-skill's branch prefixes).
 TICKET_TYPES = ("feat", "fix", "refactor", "chore", "docs", "test", "perf", "ci")
