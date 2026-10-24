@@ -28,6 +28,8 @@ function setup(boardKey: string, patch: Partial<Ticket>) {
     paneTail: vi.fn().mockResolvedValue(undefined),
     ship: vi.fn().mockResolvedValue(true),
     resolveNoCode: vi.fn().mockResolvedValue(true),
+    finishConflict: vi.fn().mockResolvedValue(true),
+    abortConflict: vi.fn().mockResolvedValue(true),
     refine: vi.fn().mockResolvedValue(true),
     setTaskDone: vi.fn().mockResolvedValue(true),
   };

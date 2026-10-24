@@ -129,6 +129,23 @@ running for at most `rpc_timeout_s - export_timeout_s`, then fails with
 any running export, with everything it started.
 The box policy layer, `~/.config/tk-daemon/policy.json`, is read by `tk-export.sh`.
 
+When `merge_pr` hits a conflict (`tk.sh merge` exit 10), the daemon sends
+ticket-merger on its own: `merge-conflict.sh start` from the main checkout, then
+`claude -p --agent ticket-merger --model sonnet` in the ticket's worktree, killed
+after `rpc_synthesis_timeout_s`. It runs with no permission-skip flag or mode, but
+with a scoped `--allowedTools` (read anywhere, edit in the worktree, `git add`,
+`git diff`, `git status`, `git log`, `merge-conflict.sh status`) and a
+`--disallowedTools` list (`git commit`, `git push`, `merge-conflict.sh
+start|finish|abort`, ...). The agent resolves and stages, never commits. Resolved, the ticket's hub-meta `merge_conflict` goes to
+`review` and a synthesis run covers the merge; failed, timed out or still
+unresolved, `merge-conflict.sh abort` puts the worktree back and the state is
+`failed`, with the agent's output tail. Only `finish_conflict` (Commit merge,
+`confirm: true`) runs `merge-conflict.sh finish`, the one commit and push the hub
+causes; `abort_conflict` aborts (also on a `failed` state). A daemon stopped or
+killed mid-resolve leaves the state `resolving`; the next daemon's first export
+aborts that merge under the board's flock and marks it `failed`. `merge-conflict.sh` is `$TK_MERGE_CONFLICT`, else
+the one beside `tk.sh` (symlinks followed), else the installed skill's.
+
 ### Synthesis
 
 Card summaries, full reports and manual checklists are written by a cheap CLI
